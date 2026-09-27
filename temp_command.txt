@@ -19,3 +19,5 @@ python -m pip install ./flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-c
 MAX_JOBS=8 python -m pip install flash-attn==2.7.4.post1 --no-build-isolation
 
 但源码编译会慢很多。
+
+https://github.com/Dao-AILab/flash-attention/releases/tag/v2.7.4.post1
