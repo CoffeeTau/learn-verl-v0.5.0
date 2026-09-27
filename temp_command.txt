@@ -1,3 +1,1 @@
-train.jsonl (https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl)
-
-test.jsonl (https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl)
+python3 -c "import torch,vllm,flash_attn,ray,datasets,transformers,tensordict; print('torch:',torch.__version__); print('cuda:',torch.version.cuda); print('vllm:',vllm.__version__); print('flash_attn:',flash_attn.__version__); print('ray:',ray.__version__); print('datasets:',datasets.__version__); print('transformers:',transformers.__version__); print('tensordict:',tensordict.__version__); print('GPU count:',torch.cuda.device_count())"
