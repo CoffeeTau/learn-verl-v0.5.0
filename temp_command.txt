@@ -1,36 +1,5 @@
-cat >/tmp/sitecustomize.py <<'EOF'
-import warnings
-from urllib.parse import urlparse
-
-import requests
-import urllib3
-
-_old_request = requests.sessions.Session.request
-
-def _request(self, method, url, **kwargs):
-    hostname = (urlparse(url).hostname or "").lower()
-
-    allow_insecure = (
-        hostname == "modelscope.cn"
-        or hostname.endswith(".modelscope.cn")
-        or hostname.endswith(".aliyuncs.com")
-    )
-
-    if allow_insecure:
-        kwargs["verify"] = False
-
-    return _old_request(self, method, url, **kwargs)
-
-requests.sessions.Session.request = _request
-
-warnings.filterwarnings(
-    "ignore",
-    category=urllib3.exceptions.InsecureRequestWarning,
-)
-EOF
-
-再执行：
-
-PYTHONPATH=/tmp modelscope download \
-  --dataset modelscope/gsm8k \
-  --local_dir data/modelscope-gsm8k
+find data/modelscope-gsm8k \
+  -maxdepth 5 \
+  -type f \
+  -printf '%p\t%k KB\n' \
+  | sort
