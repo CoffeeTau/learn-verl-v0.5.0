@@ -1,5 +1,3 @@
-find data/modelscope-gsm8k \
-  -maxdepth 5 \
-  -type f \
-  -printf '%p\t%k KB\n' \
-  | sort
+train.jsonl (https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/train.jsonl)
+
+test.jsonl (https://raw.githubusercontent.com/openai/grade-school-math/master/grade_school_math/data/test.jsonl)
