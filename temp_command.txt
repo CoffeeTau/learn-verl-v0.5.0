@@ -1,54 +1,18 @@
-## 1. 用 Qwen 做一次真实推理
-
-先把路径改成 H20 服务器上的实际模型目录：
-
-export QWEN_MODEL_PATH=/data/models/Qwen2.5-0.5B-Instruct
-
-检查目录：
-
-test -f "$QWEN_MODEL_PATH/config.json" && echo "model path OK"
-
-单卡运行：
-
-CUDA_VISIBLE_DEVICES=0 python3 - <<'PY'
+python3 - <<'PY'
 import os
-import torch
-import vllm
-from vllm import LLM, SamplingParams
+import transformers
+from transformers import AutoTokenizer
 
 model_path = os.environ["QWEN_MODEL_PATH"]
-
-print("torch:", torch.__version__)
-print("torch cuda:", torch.version.cuda)
-print("vllm:", vllm.__version__)
-print("gpu:", torch.cuda.get_device_name(0))
-
-llm = LLM(
-    model=model_path,
-    dtype="bfloat16",
-    max_model_len=1024,
-    gpu_memory_utilization=0.35,
-    enforce_eager=True,
+tokenizer = AutoTokenizer.from_pretrained(
+    model_path,
+    local_files_only=True,
 )
 
-params = SamplingParams(
-    temperature=0.0,
-    max_tokens=64,
+print("transformers:", transformers.__version__)
+print("tokenizer:", type(tokenizer).__name__)
+print(
+    "all_special_tokens_extended:",
+    hasattr(tokenizer, "all_special_tokens_extended"),
 )
-
-outputs = llm.generate(
-    ["Calculate 17 * 23. Explain briefly and put the final answer after ####."],
-    params,
-)
-
-print(outputs[0].outputs[0].text)
 PY
-
-这一关需要看到：
-
-模型权重成功加载
-H20 显存被使用
-最终输出生成文本
-没有 undefined symbol、CUDA、NCCL 或 FlashAttention 错误
-
-如果成功，才继续安装 veRL。
