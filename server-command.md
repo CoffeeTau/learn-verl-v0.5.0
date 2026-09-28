@@ -1,19 +1,30 @@
-# veRL v0.5.0：单卡 3 步 GRPO 测试
+# veRL v0.5.0：修正 mini batch 后重跑 3 步测试
 
-本文只保留当前最新的服务器执行步骤。目标是在已经通过单卡单步冒烟测试的基础上，继续运行 3 个训练 step，并保存每一步的生成文本和奖励。
+本轮报错为：
 
-当前已确认：
+```text
+AssertionError
+config.data.train_batch_size >= config.actor_rollout_ref.actor.ppo_mini_batch_size
+```
 
-- Python 3.12.9
-- PyTorch 2.6.0+cu124
-- vLLM 0.8.4
-- FlashAttention 2.7.4.post1
-- veRL v0.5.0
-- 单卡、单 step GRPO 已完成
-- 上一次命令正常退出，但所有 rollout 的奖励和 advantage 都为 0
-- 上一次 `response_length/clip_ratio=0.5625`，因此本轮把最大回答长度从 256 提高到 512
+原命令设置了：
 
-## 1. 进入项目并确认路径变量
+```text
+data.train_batch_size=8
+actor_rollout_ref.actor.ppo_mini_batch_size=32
+```
+
+veRL v0.5.0 要求训练 batch 不小于 PPO mini batch。本轮修正为：
+
+```text
+data.train_batch_size=8
+actor_rollout_ref.actor.ppo_mini_batch_size=8
+actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4
+```
+
+其中 8 可以被 4 整除。
+
+## 1. 确认路径变量
 
 ```bash
 cd /home/h50061831/learn-verl-v0.5.0
@@ -25,25 +36,7 @@ echo "$MODEL_PATH"
 ls -lh "$TRAIN_FILE" "$TEST_FILE" "$MODEL_PATH/config.json"
 ```
 
-三个变量必须分别指向：
-
-```text
-TRAIN_FILE：GSM8K train.parquet
-TEST_FILE：GSM8K test.parquet
-MODEL_PATH：Qwen2.5-0.5B-Instruct 模型目录
-```
-
-如果变量为空，应先按照服务器上的实际路径重新设置，例如：
-
-```bash
-export TRAIN_FILE=/实际路径/gsm8k/train.parquet
-export TEST_FILE=/实际路径/gsm8k/test.parquet
-export MODEL_PATH=/实际路径/Qwen2.5-0.5B-Instruct
-```
-
-不要直接照抄“实际路径”三个字。
-
-## 2. 运行单卡 3 步测试
+## 2. 重新运行单卡 3 步测试
 
 ```bash
 ray stop --force
@@ -73,7 +66,7 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.model.lora_alpha=32 \
   actor_rollout_ref.model.target_modules=all-linear \
   actor_rollout_ref.actor.optim.lr=3e-5 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=8 \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.actor.use_kl_loss=True \
   actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -106,18 +99,16 @@ TRAIN_EXIT_CODE=$?
 echo "TRAIN_EXIT_CODE=$TRAIN_EXIT_CODE"
 ```
 
-`set -o pipefail` 用来保证最终退出码能反映训练进程是否失败，而不只是 `tee` 是否执行成功。
-
-## 3. 检查训练是否完成
+## 3. 检查结果
 
 ```bash
 grep -E \
-  'step:|Training Progress|Traceback|OutOfMemory|CUDA error' \
+  'step:|Training Progress|AssertionError|Traceback|OutOfMemory|CUDA error' \
   verl_smoke_3steps.log \
-  | tail -n 30
+  | tail -n 40
 ```
 
-应当出现：
+预期看到：
 
 ```text
 step:1
@@ -127,21 +118,13 @@ Training Progress: 100%
 TRAIN_EXIT_CODE=0
 ```
 
-## 4. 检查保存的 rollout
+检查 rollout 文件：
 
 ```bash
 ls -lh /home/h50061831/learn-verl-v0.5.0/rollouts_3steps
 ```
 
-预期生成：
-
-```text
-1.jsonl
-2.jsonl
-3.jsonl
-```
-
-统计每一步的奖励：
+统计奖励：
 
 ```bash
 python3 - <<'PY'
@@ -164,13 +147,4 @@ for filename in sorted(glob.glob(f"{directory}/*.jsonl")):
 PY
 ```
 
-## 5. 本轮成功标准
-
-- `TRAIN_EXIT_CODE=0`
-- 日志中出现 `step:1`、`step:2`、`step:3`
-- 生成 `1.jsonl`、`2.jsonl`、`3.jsonl`
-- 至少一部分 `score` 非零
-- `critic/advantages/min` 和 `critic/advantages/max` 不再同时为 0
-- `response_length/clip_ratio` 明显低于上一轮的 0.5625
-
-如果训练成功但奖励仍全部为 0，下一步检查 JSONL 中的 `output` 字段，确认模型是否按 GSM8K 奖励函数要求输出了 `#### 数字`。
+成功标准：命令退出码为 0、完成 3 个 step、生成三个 JSONL，并检查是否开始出现非零奖励。
