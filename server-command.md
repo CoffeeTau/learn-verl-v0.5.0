@@ -1,117 +1,60 @@
-# veRL v0.5.0：定位 GSM8K 奖励全部为 0
+# veRL v0.5.0：修正 GSM8K 输出格式并做奖励预检
 
-当前结果：
+## 当前结论
 
-- 单卡训练完成 `3/3` step
-- 每一步生成 32 条 rollout
-- `1.jsonl`、`2.jsonl`、`3.jsonl` 均正常生成
-- 三步共 96 条 rollout，但所有 `score` 都为 0
+三步训练共生成 96 条 rollout：
 
-这说明训练、vLLM、LoRA、反向传播和数据落盘链路已经跑通。当前只排查奖励为 0 的原因，暂时不重新训练。
+```text
+包含 ####：18 条
+严格匹配 #### 数字：2 条
+非零奖励：0 条
+```
 
-veRL v0.5.0 的 GSM8K 默认奖励使用严格格式，只能从回答最后 300 个字符中匹配：
+模型多次算出了正确答案，例如 `72` 和 `10`，但常写成：
+
+```text
+#### Conclusion:
+Final Answer: 10
+\boxed{10}
+#### Final Answer: **10**
+```
+
+veRL v0.5.0 的 GSM8K 默认奖励只接受回答最后 300 个字符中的：
 
 ```text
 #### 数字
 ```
 
-例如：
+因此当前主要问题是格式遵循，而不是训练、CUDA、vLLM或响应长度。本轮先创建提示词更严格的数据集，再执行纯推理奖励预检；预检出现非零奖励后才继续训练。
 
-```text
-#### 42
-```
+## 1. 导出路径变量
 
-## 1. 统计输出是否包含严格答案格式
-
-在服务器项目根目录执行：
+进入项目目录，并将变量导出给 Python 子进程：
 
 ```bash
 cd /home/h50061831/learn-verl-v0.5.0
 
-python3 - <<'PY'
-import glob
-import json
-import os
-import re
-
-directory = "/home/h50061831/learn-verl-v0.5.0/rollouts_3steps"
-strict_pattern = re.compile(r"#### (\-?[0-9\.\,]+)")
-
-for filename in sorted(glob.glob(f"{directory}/*.jsonl")):
-    with open(filename, encoding="utf-8") as file:
-        rows = [json.loads(line) for line in file]
-
-    strict_answers = []
-    contains_marker = 0
-    empty_outputs = 0
-
-    for row in rows:
-        output = row.get("output", "")
-        if not output.strip():
-            empty_outputs += 1
-        if "####" in output:
-            contains_marker += 1
-        matches = strict_pattern.findall(output[-300:])
-        if matches:
-            strict_answers.append(matches[-1])
-
-    print(
-        os.path.basename(filename),
-        "rows=", len(rows),
-        "empty=", empty_outputs,
-        "contains_####=", contains_marker,
-        "strict_matches=", len(strict_answers),
-        "examples=", strict_answers[:5],
-    )
-PY
+export TRAIN_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k/train.parquet
+export TEST_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k/test.parquet
+export MODEL_PATH=/实际模型目录/Qwen2.5-0.5B-Instruct
 ```
 
-结果解释：
+`MODEL_PATH` 必须替换成服务器上的真实模型目录，不要照抄“实际模型目录”。
 
-- `contains_####=0`：模型完全没有遵守答案格式。
-- `contains_####>0` 但 `strict_matches=0`：模型输出了标记，但不是严格的 `#### 数字`。
-- `strict_matches>0` 但奖励仍为 0：格式正确，但答案错误，或者数据中的 ground truth 有问题。
-- `empty>0`：存在空生成，需要另外检查 tokenizer 或停止符。
-
-## 2. 打印前 8 条完整回答
+验证：
 
 ```bash
-python3 - <<'PY'
-import json
-
-filename = "/home/h50061831/learn-verl-v0.5.0/rollouts_3steps/1.jsonl"
-
-with open(filename, encoding="utf-8") as file:
-    rows = [json.loads(line) for line in file]
-
-for index, row in enumerate(rows[:8], start=1):
-    print("=" * 80)
-    print("INDEX:", index)
-    print("SCORE:", row.get("score"))
-    print("INPUT:")
-    print(row.get("input", ""))
-    print("OUTPUT:")
-    print(row.get("output", ""))
-PY
+ls -lh "$TRAIN_FILE" "$TEST_FILE" "$MODEL_PATH/config.json"
 ```
 
-重点观察：
-
-- prompt 是否明确要求最终答案放在 `####` 后面；
-- output 是否出现 `####`；
-- `####` 后是否紧跟一个空格和数字；
-- 回答是否在推理中途突然结束；
-- 是否出现大量重复文字或乱码。
-
-## 3. 验证训练数据的奖励字段
+## 2. 检查原始数据字段
 
 ```bash
 python3 - <<'PY'
 import os
 import pandas as pd
 
-train_file = os.environ["TRAIN_FILE"]
-frame = pd.read_parquet(train_file)
+frame = pd.read_parquet(os.environ["TRAIN_FILE"])
 
 print("rows:", len(frame))
 print("columns:", frame.columns.tolist())
@@ -130,18 +73,166 @@ PY
 ```text
 data_source: openai/gsm8k
 reward_model.style: rule
-reward_model.ground_truth: 一个数字字符串
-prompt: 包含 output the final answer after "####"
+reward_model.ground_truth: 数字字符串
 ```
 
-## 4. 下一步判断规则
+## 3. 创建格式要求更明确的数据集
 
-执行以上三项后，按照证据选择下一步：
+不会覆盖原来的 Parquet，而是写入新目录：
 
-1. 没有 `####`：增强 prompt 的格式约束或先做少量 SFT。
-2. 有 `####` 但格式不匹配：调整 prompt 或奖励提取格式。
-3. 格式匹配但答案全错：模型能力或采样问题，检查具体题目和答案。
-4. ground truth 异常：重新生成 GSM8K Parquet。
-5. 输出在中途结束：再检查长度、EOS和生成配置。
+```bash
+python3 - <<'PY'
+import os
+from pathlib import Path
+from datasets import load_dataset
 
-暂时不要直接修改奖励函数，也不要继续增加训练步数；先确定属于哪一种情况。
+train_file = os.environ["TRAIN_FILE"]
+test_file = os.environ["TEST_FILE"]
+output_dir = Path("/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+dataset = load_dataset(
+    "parquet",
+    data_files={"train": train_file, "test": test_file},
+)
+
+format_instruction = (
+    "\n\nIMPORTANT OUTPUT FORMAT:\n"
+    "Your final line must contain only four hash signs, one space, and the numeric answer.\n"
+    "Example final line: #### 42\n"
+    "Do not use #### as a Markdown heading.\n"
+    "Do not put words, labels, currency symbols, LaTeX, or bold markup after ####.\n"
+    "Do not add a trailing period or any punctuation after the numeric answer.\n"
+    "End your response immediately after that final line."
+)
+
+def strengthen_prompt(example):
+    messages = [dict(message) for message in example["prompt"]]
+    messages[-1]["content"] = messages[-1]["content"].rstrip() + format_instruction
+    return {"prompt": messages}
+
+for split in ("train", "test"):
+    converted = dataset[split].map(strengthen_prompt)
+    destination = output_dir / f"{split}.parquet"
+    converted.to_parquet(destination)
+    print(split, len(converted), destination)
+PY
+```
+
+设置新数据路径：
+
+```bash
+export STRICT_TRAIN_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/train.parquet
+export STRICT_TEST_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/test.parquet
+
+ls -lh "$STRICT_TRAIN_FILE" "$STRICT_TEST_FILE"
+```
+
+## 4. 纯推理奖励预检
+
+这个测试只加载模型并生成前8道题的4个候选答案，共32条，不做反向传播或参数更新。
+
+```bash
+ray stop --force
+
+export CUDA_VISIBLE_DEVICES=0
+export TOKENIZERS_PARALLELISM=false
+
+python3 - <<'PY'
+import json
+import os
+import re
+from pathlib import Path
+
+from datasets import load_dataset
+from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
+from verl.utils.reward_score.gsm8k import compute_score
+
+model_path = os.environ["MODEL_PATH"]
+train_file = os.environ["STRICT_TRAIN_FILE"]
+output_file = Path(
+    "/home/h50061831/learn-verl-v0.5.0/gsm8k_strict_preflight.jsonl"
+)
+
+dataset = load_dataset(
+    "parquet",
+    data_files={"train": train_file},
+    split="train",
+).select(range(8))
+
+tokenizer = AutoTokenizer.from_pretrained(
+    model_path,
+    local_files_only=True,
+)
+
+prompts = [
+    tokenizer.apply_chat_template(
+        item["prompt"],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    for item in dataset
+]
+
+llm = LLM(
+    model=model_path,
+    dtype="bfloat16",
+    max_model_len=1024,
+    gpu_memory_utilization=0.4,
+    enforce_eager=True,
+)
+
+sampling_params = SamplingParams(
+    n=4,
+    temperature=1.0,
+    top_p=1.0,
+    max_tokens=512,
+)
+
+results = llm.generate(prompts, sampling_params)
+strict_pattern = re.compile(r"#### (\-?[0-9\.\,]+)")
+records = []
+
+for item, result in zip(dataset, results, strict=True):
+    ground_truth = str(item["reward_model"]["ground_truth"])
+    for candidate in result.outputs:
+        output = candidate.text
+        score = compute_score(output, ground_truth)
+        matches = strict_pattern.findall(output[-300:])
+        records.append(
+            {
+                "ground_truth": ground_truth,
+                "extracted": matches[-1] if matches else None,
+                "score": score,
+                "output": output,
+            }
+        )
+
+with output_file.open("w", encoding="utf-8") as file:
+    for record in records:
+        file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+print("total:", len(records))
+print("strict_matches:", sum(record["extracted"] is not None for record in records))
+print("nonzero_rewards:", sum(record["score"] != 0 for record in records))
+print("output_file:", output_file)
+
+for index, record in enumerate(records[:8], start=1):
+    print("=" * 80)
+    print("index:", index)
+    print("ground_truth:", record["ground_truth"])
+    print("extracted:", record["extracted"])
+    print("score:", record["score"])
+    print("output_tail:", record["output"][-500:])
+PY
+```
+
+## 5. 判断标准
+
+- `strict_matches` 明显大于原来的比例 `2/96`：强化提示有效。
+- `nonzero_rewards > 0`：奖励闭环恢复，可以用新 Parquet 继续训练。
+- `strict_matches > 0` 但 `nonzero_rewards = 0`：格式改善，但答案仍全错，需要检查模型能力或采样策略。
+- `strict_matches = 0`：0.5B模型仍无法可靠遵循格式，应考虑少量SFT，暂时不要继续GRPO。
+
+在奖励预检成功以前，不修改奖励函数，也不继续增加训练步数。
