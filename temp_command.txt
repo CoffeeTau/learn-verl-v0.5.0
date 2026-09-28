@@ -1,11 +1,21 @@
 python3 - <<'PY'
 import os
 import torch
+import torch.distributed as dist
 
-p = os.path.join(
-    os.path.dirname(torch.__file__),
-    "..", "nvidia", "nccl", "lib", "libnccl.so.2"
+print("torch:", torch.__version__)
+print("torch cuda:", torch.version.cuda)
+print("compiled NCCL:", torch.cuda.nccl.version())
+
+os.environ["MASTER_ADDR"] = "127.0.0.1"
+os.environ["MASTER_PORT"] = "29599"
+
+dist.init_process_group(
+    backend="nccl",
+    rank=0,
+    world_size=1,
 )
 
-print(os.path.realpath(p))
+print("NCCL init OK")
+dist.destroy_process_group()
 PY
