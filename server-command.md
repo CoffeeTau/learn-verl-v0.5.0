@@ -1,38 +1,50 @@
-# veRL v0.5.0：使用严格格式数据重跑 3 步 GRPO
+# veRL v0.5.0：修复模型路径末尾斜杠并重跑
 
-## 当前结论
+## 报错原因
 
-强化答案格式后的纯推理预检结果：
+报错为：
 
 ```text
-total: 32
-strict_matches: 8
-nonzero_rewards: 2
+AssertionError: Make sure the last char in src is not /
+Got /home/h50061831/data/models/Qwen2.5-0.5B-Instruct/
 ```
 
-相比原来的 `2/96` 严格匹配和 `0/96` 非零奖励，格式匹配率已经提升到 25%，奖励闭环也首次产生正奖励。本轮使用新 Parquet 做 3 步 GRPO，验证是否出现组内奖励差异和非零 advantage。
+veRL v0.5.0 在复制或解析模型路径时，不允许路径以 `/` 结尾。模型文件本身没有损坏。
 
-## 1. 确认路径
+错误路径：
+
+```text
+/home/h50061831/data/models/Qwen2.5-0.5B-Instruct/
+```
+
+正确路径：
+
+```text
+/home/h50061831/data/models/Qwen2.5-0.5B-Instruct
+```
+
+## 1. 修复并检查路径
 
 ```bash
 cd /home/h50061831/learn-verl-v0.5.0
 
+export MODEL_PATH="${MODEL_PATH%/}"
 export STRICT_TRAIN_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/train.parquet
 export STRICT_TEST_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/test.parquet
 
-echo "$MODEL_PATH"
-ls -lh "$STRICT_TRAIN_FILE" "$STRICT_TEST_FILE" "$MODEL_PATH/config.json"
+printf 'MODEL_PATH=<%s>\n' "$MODEL_PATH"
+ls -lh "$MODEL_PATH/config.json" "$STRICT_TRAIN_FILE" "$STRICT_TEST_FILE"
 ```
 
-如果 `MODEL_PATH` 为空，重新设置为服务器上模型的真实目录：
+输出的 `MODEL_PATH=<...>` 中，右尖括号前不能出现 `/`。
+
+如果变量为空，直接设置真实路径：
 
 ```bash
-export MODEL_PATH=/实际模型目录/Qwen2.5-0.5B-Instruct
+export MODEL_PATH=/home/h50061831/data/models/Qwen2.5-0.5B-Instruct
 ```
 
-不要照抄“实际模型目录”。
-
-## 2. 运行单卡 3 步 GRPO
+## 2. 重新运行单卡 3 步 GRPO
 
 ```bash
 ray stop --force
@@ -95,28 +107,22 @@ TRAIN_EXIT_CODE=$?
 echo "TRAIN_EXIT_CODE=$TRAIN_EXIT_CODE"
 ```
 
-## 3. 检查训练日志
+## 3. 完成后检查
 
 ```bash
 grep -E \
-  'step:|Training Progress|critic/rewards|critic/advantages|actor/grad_norm|Traceback|OutOfMemory|CUDA error' \
+  'step:|Training Progress|critic/rewards|critic/advantages|actor/grad_norm|AssertionError|Traceback|OutOfMemory|CUDA error' \
   verl_strict_3steps.log \
   | tail -n 50
 ```
 
-应出现：
+预期完成 `step:1`、`step:2`、`step:3`，并输出：
 
 ```text
-step:1
-step:2
-step:3
-Training Progress: 100%
 TRAIN_EXIT_CODE=0
 ```
 
-## 4. 统计每一步和每个 GRPO 组的奖励
-
-每个 prompt 生成4个候选回答，因此每连续4条记录视为一个组：
+统计每一步的奖励组：
 
 ```bash
 python3 - <<'PY'
@@ -137,22 +143,8 @@ for filename in sorted(glob.glob(f"{directory}/*.jsonl")):
 
     print("=" * 80)
     print("file:", os.path.basename(filename))
-    print("total:", len(scores))
     print("nonzero:", sum(score != 0 for score in scores))
     print("mixed_groups:", len(mixed_groups), "/", len(groups))
     print("groups:", groups)
 PY
 ```
-
-## 5. 成功标准
-
-- `TRAIN_EXIT_CODE=0`
-- 完成 `step:1`、`step:2`、`step:3`
-- 至少一个 step 出现 `nonzero > 0`
-- 至少一个 step 出现 `mixed_groups > 0`
-- 对应日志中的 `critic/advantages/min` 和 `critic/advantages/max` 不再同时为 0
-- `actor/grad_norm` 是有效有限数值
-
-`actor/pg_loss` 的显示值可能仍接近 0，因为归一化后的 advantage 均值接近 0；判断是否存在学习信号应优先查看组内奖励差异、advantage范围和梯度，而不是只看 `pg_loss` 标量。
-
-如果3步都没有 mixed group，则继续训练不会产生有效GRPO信号，应先进一步提高格式遵循或模型正确率。
