@@ -1,150 +1,147 @@
-# veRL v0.5.0：修正 mini batch 后重跑 3 步测试
+# veRL v0.5.0：定位 GSM8K 奖励全部为 0
 
-本轮报错为：
+当前结果：
 
-```text
-AssertionError
-config.data.train_batch_size >= config.actor_rollout_ref.actor.ppo_mini_batch_size
-```
+- 单卡训练完成 `3/3` step
+- 每一步生成 32 条 rollout
+- `1.jsonl`、`2.jsonl`、`3.jsonl` 均正常生成
+- 三步共 96 条 rollout，但所有 `score` 都为 0
 
-原命令设置了：
+这说明训练、vLLM、LoRA、反向传播和数据落盘链路已经跑通。当前只排查奖励为 0 的原因，暂时不重新训练。
 
-```text
-data.train_batch_size=8
-actor_rollout_ref.actor.ppo_mini_batch_size=32
-```
-
-veRL v0.5.0 要求训练 batch 不小于 PPO mini batch。本轮修正为：
+veRL v0.5.0 的 GSM8K 默认奖励使用严格格式，只能从回答最后 300 个字符中匹配：
 
 ```text
-data.train_batch_size=8
-actor_rollout_ref.actor.ppo_mini_batch_size=8
-actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4
+#### 数字
 ```
 
-其中 8 可以被 4 整除。
+例如：
 
-## 1. 确认路径变量
+```text
+#### 42
+```
+
+## 1. 统计输出是否包含严格答案格式
+
+在服务器项目根目录执行：
 
 ```bash
 cd /home/h50061831/learn-verl-v0.5.0
 
-echo "$TRAIN_FILE"
-echo "$TEST_FILE"
-echo "$MODEL_PATH"
-
-ls -lh "$TRAIN_FILE" "$TEST_FILE" "$MODEL_PATH/config.json"
-```
-
-## 2. 重新运行单卡 3 步测试
-
-```bash
-ray stop --force
-
-export CUDA_VISIBLE_DEVICES=0
-export TOKENIZERS_PARALLELISM=false
-export HYDRA_FULL_ERROR=1
-export PYTHONUNBUFFERED=1
-
-set -o pipefail
-
-python3 -m verl.trainer.main_ppo \
-  algorithm.adv_estimator=grpo \
-  algorithm.use_kl_in_reward=False \
-  data.train_files="$TRAIN_FILE" \
-  data.val_files="$TEST_FILE" \
-  data.train_batch_size=8 \
-  data.max_prompt_length=512 \
-  data.max_response_length=512 \
-  data.filter_overlong_prompts=True \
-  data.truncation=error \
-  data.shuffle=False \
-  actor_rollout_ref.model.path="$MODEL_PATH" \
-  actor_rollout_ref.model.enable_gradient_checkpointing=True \
-  actor_rollout_ref.model.use_remove_padding=True \
-  actor_rollout_ref.model.lora_rank=32 \
-  actor_rollout_ref.model.lora_alpha=32 \
-  actor_rollout_ref.model.target_modules=all-linear \
-  actor_rollout_ref.actor.optim.lr=3e-5 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=8 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
-  actor_rollout_ref.actor.use_kl_loss=True \
-  actor_rollout_ref.actor.kl_loss_coef=0.001 \
-  actor_rollout_ref.actor.kl_loss_type=low_var_kl \
-  actor_rollout_ref.rollout.name=vllm \
-  actor_rollout_ref.rollout.n=4 \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-  actor_rollout_ref.rollout.enforce_eager=True \
-  actor_rollout_ref.rollout.free_cache_engine=True \
-  actor_rollout_ref.rollout.load_format=safetensors \
-  actor_rollout_ref.rollout.layered_summon=True \
-  actor_rollout_ref.rollout.max_model_len=1024 \
-  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
-  actor_rollout_ref.ref.fsdp_config.param_offload=True \
-  trainer.logger=console \
-  trainer.project_name=verl_smoke \
-  trainer.experiment_name=qwen25_05b_grpo_3steps \
-  trainer.rollout_data_dir=/home/h50061831/learn-verl-v0.5.0/rollouts_3steps \
-  trainer.val_before_train=False \
-  trainer.n_gpus_per_node=1 \
-  trainer.nnodes=1 \
-  trainer.save_freq=-1 \
-  trainer.test_freq=-1 \
-  trainer.total_training_steps=3 \
-  2>&1 | tee verl_smoke_3steps.log
-
-TRAIN_EXIT_CODE=$?
-echo "TRAIN_EXIT_CODE=$TRAIN_EXIT_CODE"
-```
-
-## 3. 检查结果
-
-```bash
-grep -E \
-  'step:|Training Progress|AssertionError|Traceback|OutOfMemory|CUDA error' \
-  verl_smoke_3steps.log \
-  | tail -n 40
-```
-
-预期看到：
-
-```text
-step:1
-step:2
-step:3
-Training Progress: 100%
-TRAIN_EXIT_CODE=0
-```
-
-检查 rollout 文件：
-
-```bash
-ls -lh /home/h50061831/learn-verl-v0.5.0/rollouts_3steps
-```
-
-统计奖励：
-
-```bash
 python3 - <<'PY'
 import glob
 import json
+import os
+import re
 
 directory = "/home/h50061831/learn-verl-v0.5.0/rollouts_3steps"
+strict_pattern = re.compile(r"#### (\-?[0-9\.\,]+)")
 
 for filename in sorted(glob.glob(f"{directory}/*.jsonl")):
     with open(filename, encoding="utf-8") as file:
         rows = [json.loads(line) for line in file]
-    scores = [row["score"] for row in rows]
+
+    strict_answers = []
+    contains_marker = 0
+    empty_outputs = 0
+
+    for row in rows:
+        output = row.get("output", "")
+        if not output.strip():
+            empty_outputs += 1
+        if "####" in output:
+            contains_marker += 1
+        matches = strict_pattern.findall(output[-300:])
+        if matches:
+            strict_answers.append(matches[-1])
+
     print(
-        filename,
-        "count=", len(scores),
-        "min=", min(scores),
-        "max=", max(scores),
-        "nonzero=", sum(score != 0 for score in scores),
+        os.path.basename(filename),
+        "rows=", len(rows),
+        "empty=", empty_outputs,
+        "contains_####=", contains_marker,
+        "strict_matches=", len(strict_answers),
+        "examples=", strict_answers[:5],
     )
 PY
 ```
 
-成功标准：命令退出码为 0、完成 3 个 step、生成三个 JSONL，并检查是否开始出现非零奖励。
+结果解释：
+
+- `contains_####=0`：模型完全没有遵守答案格式。
+- `contains_####>0` 但 `strict_matches=0`：模型输出了标记，但不是严格的 `#### 数字`。
+- `strict_matches>0` 但奖励仍为 0：格式正确，但答案错误，或者数据中的 ground truth 有问题。
+- `empty>0`：存在空生成，需要另外检查 tokenizer 或停止符。
+
+## 2. 打印前 8 条完整回答
+
+```bash
+python3 - <<'PY'
+import json
+
+filename = "/home/h50061831/learn-verl-v0.5.0/rollouts_3steps/1.jsonl"
+
+with open(filename, encoding="utf-8") as file:
+    rows = [json.loads(line) for line in file]
+
+for index, row in enumerate(rows[:8], start=1):
+    print("=" * 80)
+    print("INDEX:", index)
+    print("SCORE:", row.get("score"))
+    print("INPUT:")
+    print(row.get("input", ""))
+    print("OUTPUT:")
+    print(row.get("output", ""))
+PY
+```
+
+重点观察：
+
+- prompt 是否明确要求最终答案放在 `####` 后面；
+- output 是否出现 `####`；
+- `####` 后是否紧跟一个空格和数字；
+- 回答是否在推理中途突然结束；
+- 是否出现大量重复文字或乱码。
+
+## 3. 验证训练数据的奖励字段
+
+```bash
+python3 - <<'PY'
+import os
+import pandas as pd
+
+train_file = os.environ["TRAIN_FILE"]
+frame = pd.read_parquet(train_file)
+
+print("rows:", len(frame))
+print("columns:", frame.columns.tolist())
+
+for index in range(min(3, len(frame))):
+    row = frame.iloc[index]
+    print("=" * 80)
+    print("data_source:", row.get("data_source"))
+    print("prompt:", row.get("prompt"))
+    print("reward_model:", row.get("reward_model"))
+PY
+```
+
+正常数据应满足：
+
+```text
+data_source: openai/gsm8k
+reward_model.style: rule
+reward_model.ground_truth: 一个数字字符串
+prompt: 包含 output the final answer after "####"
+```
+
+## 4. 下一步判断规则
+
+执行以上三项后，按照证据选择下一步：
+
+1. 没有 `####`：增强 prompt 的格式约束或先做少量 SFT。
+2. 有 `####` 但格式不匹配：调整 prompt 或奖励提取格式。
+3. 格式匹配但答案全错：模型能力或采样问题，检查具体题目和答案。
+4. ground truth 异常：重新生成 GSM8K Parquet。
+5. 输出在中途结束：再检查长度、EOS和生成配置。
+
+暂时不要直接修改奖励函数，也不要继续增加训练步数；先确定属于哪一种情况。
