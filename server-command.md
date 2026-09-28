@@ -1,238 +1,158 @@
-# veRL v0.5.0：修正 GSM8K 输出格式并做奖励预检
+# veRL v0.5.0：使用严格格式数据重跑 3 步 GRPO
 
 ## 当前结论
 
-三步训练共生成 96 条 rollout：
+强化答案格式后的纯推理预检结果：
 
 ```text
-包含 ####：18 条
-严格匹配 #### 数字：2 条
-非零奖励：0 条
+total: 32
+strict_matches: 8
+nonzero_rewards: 2
 ```
 
-模型多次算出了正确答案，例如 `72` 和 `10`，但常写成：
+相比原来的 `2/96` 严格匹配和 `0/96` 非零奖励，格式匹配率已经提升到 25%，奖励闭环也首次产生正奖励。本轮使用新 Parquet 做 3 步 GRPO，验证是否出现组内奖励差异和非零 advantage。
 
-```text
-#### Conclusion:
-Final Answer: 10
-\boxed{10}
-#### Final Answer: **10**
-```
-
-veRL v0.5.0 的 GSM8K 默认奖励只接受回答最后 300 个字符中的：
-
-```text
-#### 数字
-```
-
-因此当前主要问题是格式遵循，而不是训练、CUDA、vLLM或响应长度。本轮先创建提示词更严格的数据集，再执行纯推理奖励预检；预检出现非零奖励后才继续训练。
-
-## 1. 导出路径变量
-
-进入项目目录，并将变量导出给 Python 子进程：
+## 1. 确认路径
 
 ```bash
 cd /home/h50061831/learn-verl-v0.5.0
 
-export TRAIN_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k/train.parquet
-export TEST_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k/test.parquet
-export MODEL_PATH=/实际模型目录/Qwen2.5-0.5B-Instruct
-```
-
-`MODEL_PATH` 必须替换成服务器上的真实模型目录，不要照抄“实际模型目录”。
-
-验证：
-
-```bash
-ls -lh "$TRAIN_FILE" "$TEST_FILE" "$MODEL_PATH/config.json"
-```
-
-## 2. 检查原始数据字段
-
-```bash
-python3 - <<'PY'
-import os
-import pandas as pd
-
-frame = pd.read_parquet(os.environ["TRAIN_FILE"])
-
-print("rows:", len(frame))
-print("columns:", frame.columns.tolist())
-
-for index in range(min(3, len(frame))):
-    row = frame.iloc[index]
-    print("=" * 80)
-    print("data_source:", row.get("data_source"))
-    print("prompt:", row.get("prompt"))
-    print("reward_model:", row.get("reward_model"))
-PY
-```
-
-正常数据应满足：
-
-```text
-data_source: openai/gsm8k
-reward_model.style: rule
-reward_model.ground_truth: 数字字符串
-```
-
-## 3. 创建格式要求更明确的数据集
-
-不会覆盖原来的 Parquet，而是写入新目录：
-
-```bash
-python3 - <<'PY'
-import os
-from pathlib import Path
-from datasets import load_dataset
-
-train_file = os.environ["TRAIN_FILE"]
-test_file = os.environ["TEST_FILE"]
-output_dir = Path("/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-dataset = load_dataset(
-    "parquet",
-    data_files={"train": train_file, "test": test_file},
-)
-
-format_instruction = (
-    "\n\nIMPORTANT OUTPUT FORMAT:\n"
-    "Your final line must contain only four hash signs, one space, and the numeric answer.\n"
-    "Example final line: #### 42\n"
-    "Do not use #### as a Markdown heading.\n"
-    "Do not put words, labels, currency symbols, LaTeX, or bold markup after ####.\n"
-    "Do not add a trailing period or any punctuation after the numeric answer.\n"
-    "End your response immediately after that final line."
-)
-
-def strengthen_prompt(example):
-    messages = [dict(message) for message in example["prompt"]]
-    messages[-1]["content"] = messages[-1]["content"].rstrip() + format_instruction
-    return {"prompt": messages}
-
-for split in ("train", "test"):
-    converted = dataset[split].map(strengthen_prompt)
-    destination = output_dir / f"{split}.parquet"
-    converted.to_parquet(destination)
-    print(split, len(converted), destination)
-PY
-```
-
-设置新数据路径：
-
-```bash
 export STRICT_TRAIN_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/train.parquet
 export STRICT_TEST_FILE=/home/h50061831/learn-verl-v0.5.0/data/gsm8k_strict/test.parquet
 
-ls -lh "$STRICT_TRAIN_FILE" "$STRICT_TEST_FILE"
+echo "$MODEL_PATH"
+ls -lh "$STRICT_TRAIN_FILE" "$STRICT_TEST_FILE" "$MODEL_PATH/config.json"
 ```
 
-## 4. 纯推理奖励预检
+如果 `MODEL_PATH` 为空，重新设置为服务器上模型的真实目录：
 
-这个测试只加载模型并生成前8道题的4个候选答案，共32条，不做反向传播或参数更新。
+```bash
+export MODEL_PATH=/实际模型目录/Qwen2.5-0.5B-Instruct
+```
+
+不要照抄“实际模型目录”。
+
+## 2. 运行单卡 3 步 GRPO
 
 ```bash
 ray stop --force
 
 export CUDA_VISIBLE_DEVICES=0
 export TOKENIZERS_PARALLELISM=false
+export HYDRA_FULL_ERROR=1
+export PYTHONUNBUFFERED=1
 
+set -o pipefail
+
+python3 -m verl.trainer.main_ppo \
+  algorithm.adv_estimator=grpo \
+  algorithm.use_kl_in_reward=False \
+  data.train_files="$STRICT_TRAIN_FILE" \
+  data.val_files="$STRICT_TEST_FILE" \
+  data.train_batch_size=8 \
+  data.max_prompt_length=512 \
+  data.max_response_length=512 \
+  data.filter_overlong_prompts=True \
+  data.truncation=error \
+  data.shuffle=False \
+  actor_rollout_ref.model.path="$MODEL_PATH" \
+  actor_rollout_ref.model.enable_gradient_checkpointing=True \
+  actor_rollout_ref.model.use_remove_padding=True \
+  actor_rollout_ref.model.lora_rank=32 \
+  actor_rollout_ref.model.lora_alpha=32 \
+  actor_rollout_ref.model.target_modules=all-linear \
+  actor_rollout_ref.actor.optim.lr=3e-5 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=8 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
+  actor_rollout_ref.actor.use_kl_loss=True \
+  actor_rollout_ref.actor.kl_loss_coef=0.001 \
+  actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+  actor_rollout_ref.rollout.name=vllm \
+  actor_rollout_ref.rollout.n=4 \
+  actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+  actor_rollout_ref.rollout.enforce_eager=True \
+  actor_rollout_ref.rollout.free_cache_engine=True \
+  actor_rollout_ref.rollout.load_format=safetensors \
+  actor_rollout_ref.rollout.layered_summon=True \
+  actor_rollout_ref.rollout.max_model_len=1024 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
+  actor_rollout_ref.ref.fsdp_config.param_offload=True \
+  trainer.logger=console \
+  trainer.project_name=verl_smoke \
+  trainer.experiment_name=qwen25_05b_grpo_strict_3steps \
+  trainer.rollout_data_dir=/home/h50061831/learn-verl-v0.5.0/rollouts_strict_3steps \
+  trainer.val_before_train=False \
+  trainer.n_gpus_per_node=1 \
+  trainer.nnodes=1 \
+  trainer.save_freq=-1 \
+  trainer.test_freq=-1 \
+  trainer.total_training_steps=3 \
+  2>&1 | tee verl_strict_3steps.log
+
+TRAIN_EXIT_CODE=$?
+echo "TRAIN_EXIT_CODE=$TRAIN_EXIT_CODE"
+```
+
+## 3. 检查训练日志
+
+```bash
+grep -E \
+  'step:|Training Progress|critic/rewards|critic/advantages|actor/grad_norm|Traceback|OutOfMemory|CUDA error' \
+  verl_strict_3steps.log \
+  | tail -n 50
+```
+
+应出现：
+
+```text
+step:1
+step:2
+step:3
+Training Progress: 100%
+TRAIN_EXIT_CODE=0
+```
+
+## 4. 统计每一步和每个 GRPO 组的奖励
+
+每个 prompt 生成4个候选回答，因此每连续4条记录视为一个组：
+
+```bash
 python3 - <<'PY'
+import glob
 import json
 import os
-import re
-from pathlib import Path
 
-from datasets import load_dataset
-from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
-from verl.utils.reward_score.gsm8k import compute_score
+directory = "/home/h50061831/learn-verl-v0.5.0/rollouts_strict_3steps"
+group_size = 4
 
-model_path = os.environ["MODEL_PATH"]
-train_file = os.environ["STRICT_TRAIN_FILE"]
-output_file = Path(
-    "/home/h50061831/learn-verl-v0.5.0/gsm8k_strict_preflight.jsonl"
-)
+for filename in sorted(glob.glob(f"{directory}/*.jsonl")):
+    with open(filename, encoding="utf-8") as file:
+        rows = [json.loads(line) for line in file]
 
-dataset = load_dataset(
-    "parquet",
-    data_files={"train": train_file},
-    split="train",
-).select(range(8))
+    scores = [float(row["score"]) for row in rows]
+    groups = [scores[index:index + group_size] for index in range(0, len(scores), group_size)]
+    mixed_groups = [group for group in groups if min(group) < max(group)]
 
-tokenizer = AutoTokenizer.from_pretrained(
-    model_path,
-    local_files_only=True,
-)
-
-prompts = [
-    tokenizer.apply_chat_template(
-        item["prompt"],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    for item in dataset
-]
-
-llm = LLM(
-    model=model_path,
-    dtype="bfloat16",
-    max_model_len=1024,
-    gpu_memory_utilization=0.4,
-    enforce_eager=True,
-)
-
-sampling_params = SamplingParams(
-    n=4,
-    temperature=1.0,
-    top_p=1.0,
-    max_tokens=512,
-)
-
-results = llm.generate(prompts, sampling_params)
-strict_pattern = re.compile(r"#### (\-?[0-9\.\,]+)")
-records = []
-
-for item, result in zip(dataset, results, strict=True):
-    ground_truth = str(item["reward_model"]["ground_truth"])
-    for candidate in result.outputs:
-        output = candidate.text
-        score = compute_score(output, ground_truth)
-        matches = strict_pattern.findall(output[-300:])
-        records.append(
-            {
-                "ground_truth": ground_truth,
-                "extracted": matches[-1] if matches else None,
-                "score": score,
-                "output": output,
-            }
-        )
-
-with output_file.open("w", encoding="utf-8") as file:
-    for record in records:
-        file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-print("total:", len(records))
-print("strict_matches:", sum(record["extracted"] is not None for record in records))
-print("nonzero_rewards:", sum(record["score"] != 0 for record in records))
-print("output_file:", output_file)
-
-for index, record in enumerate(records[:8], start=1):
     print("=" * 80)
-    print("index:", index)
-    print("ground_truth:", record["ground_truth"])
-    print("extracted:", record["extracted"])
-    print("score:", record["score"])
-    print("output_tail:", record["output"][-500:])
+    print("file:", os.path.basename(filename))
+    print("total:", len(scores))
+    print("nonzero:", sum(score != 0 for score in scores))
+    print("mixed_groups:", len(mixed_groups), "/", len(groups))
+    print("groups:", groups)
 PY
 ```
 
-## 5. 判断标准
+## 5. 成功标准
 
-- `strict_matches` 明显大于原来的比例 `2/96`：强化提示有效。
-- `nonzero_rewards > 0`：奖励闭环恢复，可以用新 Parquet 继续训练。
-- `strict_matches > 0` 但 `nonzero_rewards = 0`：格式改善，但答案仍全错，需要检查模型能力或采样策略。
-- `strict_matches = 0`：0.5B模型仍无法可靠遵循格式，应考虑少量SFT，暂时不要继续GRPO。
+- `TRAIN_EXIT_CODE=0`
+- 完成 `step:1`、`step:2`、`step:3`
+- 至少一个 step 出现 `nonzero > 0`
+- 至少一个 step 出现 `mixed_groups > 0`
+- 对应日志中的 `critic/advantages/min` 和 `critic/advantages/max` 不再同时为 0
+- `actor/grad_norm` 是有效有限数值
 
-在奖励预检成功以前，不修改奖励函数，也不继续增加训练步数。
+`actor/pg_loss` 的显示值可能仍接近 0，因为归一化后的 advantage 均值接近 0；判断是否存在学习信号应优先查看组内奖励差异、advantage范围和梯度，而不是只看 `pg_loss` 标量。
+
+如果3步都没有 mixed group，则继续训练不会产生有效GRPO信号，应先进一步提高格式遵循或模型正确率。
