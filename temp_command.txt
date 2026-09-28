@@ -1,18 +1,5 @@
-python3 - <<'PY'
-import os
-import transformers
-from transformers import AutoTokenizer
-
-model_path = os.environ["QWEN_MODEL_PATH"]
-tokenizer = AutoTokenizer.from_pretrained(
-    model_path,
-    local_files_only=True,
-)
-
-print("transformers:", transformers.__version__)
-print("tokenizer:", type(tokenizer).__name__)
-print(
-    "all_special_tokens_extended:",
-    hasattr(tokenizer, "all_special_tokens_extended"),
-)
-PY
+nvidia-smi
+python -c "import torch; print('torch:', torch.__version__); print('torch cuda:', torch.version.cuda)"
+echo $CUDA_HOME
+ls -l /usr/local/cuda
+cat /usr/local/cuda/version.json 2>/dev/null
