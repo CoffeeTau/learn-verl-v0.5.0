@@ -1,27 +1,6 @@
-还可以查看默认路由使用哪张网卡：
+git clone \
+  --branch v0.8.0 \
+  --depth 1 \
+  https://github.com/verl-project/verl.git \
+  learn-verl-v0.8.0
 
-cat /proc/net/route
-
-找到第二列为 00000000 的行，例如：
-
-Iface  Destination
-eth0   00000000
-
-也可以直接提取：
-
-awk '$2 == "00000000" {print $1}' /proc/net/route
-
-假如输出：
-
-eth0
-
-就执行：
-
-export NCCL_SOCKET_IFNAME='=eth0'
-export GLOO_SOCKET_IFNAME='eth0'
-export NCCL_SOCKET_FAMILY=AF_INET
-export NCCL_DEBUG=INFO
-
-ray stop --force
-
-然后从同一个终端重新运行训练。
