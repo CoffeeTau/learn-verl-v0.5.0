@@ -1,0 +1,16 @@
+{
+  "dataset_version": "2wiki_v1",
+  "seed": 42,
+  "train_size": 2000,
+  "dev_size": 200,
+  "test_size": 300,
+  "background_paragraphs": 3000,
+  "chunk_tokens": 384,
+  "index_batch_size": 64,
+  "max_searches": 4,
+  "top_k": 3,
+  "max_context_tokens": 8192,
+  "max_new_tokens": 512,
+  "temperature": 0.0,
+  "gpu_memory_utilization": 0.65
+}
