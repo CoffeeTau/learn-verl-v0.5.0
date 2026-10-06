@@ -1,5 +1,7 @@
 # Agentic Search 主干实施计划
 
+复盘入口：[实验日志：主干结果、bad case 与关键决策](EXPERIMENT_LOG.md)。后续关键实验统一维护此文档，避免分散记录。
+
 下载资源后执行：[数据与模型基本测试：命令、结果路径与回传要求](RESOURCE_SMOKE.md)。
 
 基础测试通过后执行：[正式数据准备、建索引与 V0：三步命令及截图回传](MAINLINE.md)。当前新增代码采用 `project/configs/main.json` 保存实验配置，机器路径仍由 `.env` 管理。
@@ -245,3 +247,5 @@ bash project/scripts/run.sh python3 your_script.py
 第二条中的 `your_script.py` 是调用方式示例，不是已实现的训练脚本。Python 进程通过 `os.environ` 读取路径；后续 Ray 训练入口将路径解析进传给 worker 的配置，不依赖 worker 隐式继承整个 `.env`。
 
 本地同步远端时同步源码，保留远端 `.env` 与 `runtime/`。若使用 rsync，明确排除这两项；Git 忽略规则不会自动成为 rsync 排除规则。
+
+监控入口：[TensorBoard：导入历史记录与 VS Code Remote SSH 访问](TENSORBOARD.md)。
