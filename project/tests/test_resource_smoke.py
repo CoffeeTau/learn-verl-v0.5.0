@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from project.scripts.smoke import extract_tag, find_split, validate_row
+from project.scripts.summarize_smoke import placeholder_query, render
 
 
 def example(identifier):
@@ -18,6 +19,13 @@ def example(identifier):
 
 
 class ResourceSmokeTests(unittest.TestCase):
+    def test_legacy_placeholder_pass_is_flagged_in_summary(self):
+        self.assertTrue(placeholder_query(" query "))
+        self.assertFalse(placeholder_query("Louis XIV place of death"))
+        summary = render({"stage": "models", "status": "passed",
+                          "tool_roundtrip": {"query": "query"}})
+        self.assertIn("INVALID PLACEHOLDER", summary)
+
     def test_support_out_of_range_fails(self):
         row = example("a")
         row["supporting_facts"][0][1] = 3

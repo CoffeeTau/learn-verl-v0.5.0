@@ -13,4 +13,4 @@ mkdir -p "$report_dir"
 # Offline mode: tests must use downloaded resources and must not fetch replacements.
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 printf 'Report: %s/%s_report.json\nLog: %s/%s.log\n' "$report_dir" "$stage" "$report_dir" "$stage"
-"${PYTHON_BIN:-python}" -u -m project.scripts.smoke "$stage" "$@" 2>&1 | tee "$report_dir/$stage.log"
+"${PYTHON_BIN:-python3}" -u -m project.scripts.smoke "$stage" "$@" 2>&1 | tee "$report_dir/$stage.log"

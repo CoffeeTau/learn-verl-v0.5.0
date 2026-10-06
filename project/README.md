@@ -97,14 +97,14 @@ bash project/scripts/run.sh bash
 mkdir -p "$AGENTIC_ROOT/models" "$AGENTIC_ROOT/data/raw/2wiki" "$AGENTIC_ROOT/runs"
 
 # 在现有训练环境记录一次版本，不先升级整套环境。
-python -c 'import sys; from importlib.metadata import version; print(sys.version); print({p: version(p) for p in ["torch", "vllm", "transformers", "huggingface-hub"]})'
+python3 -c 'import sys; from importlib.metadata import version; print(sys.version); print({p: version(p) for p in ["torch", "vllm", "transformers", "huggingface-hub"]})'
 nvidia-smi
 ```
 
 下载模型使用已有 `huggingface_hub`；缺失时可在单独下载环境安装，不影响训练环境。下面每个模型先固定一次实际 revision，重跑会复用该 revision：
 
 ```bash
-python - <<'PY'
+python3 - <<'PY'
 import json, os
 from pathlib import Path
 from huggingface_hub import HfApi, snapshot_download
@@ -235,7 +235,7 @@ learn-verl-v0.5.0/
 
 ```bash
 bash project/scripts/run.sh --print-paths
-bash project/scripts/run.sh python your_script.py
+bash project/scripts/run.sh python3 your_script.py
 ```
 
 第二条中的 `your_script.py` 是调用方式示例，不是已实现的训练脚本。Python 进程通过 `os.environ` 读取路径；后续 Ray 训练入口将路径解析进传给 worker 的配置，不依赖 worker 隐式继承整个 `.env`。

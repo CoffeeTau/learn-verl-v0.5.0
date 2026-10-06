@@ -19,6 +19,8 @@ import sys
 import time
 import traceback
 
+from project.scripts.summarize_smoke import placeholder_query, render
+
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -204,12 +206,17 @@ def check_models(args, report, out):
     report["phase"] = "search_action"
     question = questions[0]
     messages = [{"role": "system", "content": (
-        "You are testing a search tool. First output exactly one <search>query</search> action, "
-        "with no other text. After receiving <information>, output one <answer>...</answer>. "
+        "You are answering the user's question using a search tool. First formulate a concrete "
+        "search query using relevant entity names and the missing fact. Put your actual search "
+        "words between the opening tag <search> and closing tag </search>, with no other text. "
+        "Do not output placeholder words such as 'query'. After receiving information, put "
+        "a concise answer to the user's question between <answer> and </answer>. "
         "If evidence is insufficient, say insufficient evidence inside the answer tags."
     )}, {"role": "user", "content": question["question"]}]
     action = generate(messages, ["</search>"])
     query = extract_tag(action, "search")
+    report["tool_roundtrip"] = {"question_id": question["id"], "question": question["question"], "query": query}
+    required(not placeholder_query(query), "Model emitted a placeholder instead of a concrete search query")
     report["phase"] = "retrieve_and_continue"
     query_vector = encoder.encode([question["question"] + " [SEP] " + query], is_query=True)
     scores = (query_vector @ vectors.T)[0]
@@ -260,7 +267,9 @@ def main():
     finally:
         report["elapsed_seconds"] = round(time.monotonic() - start, 3)
         write_json(target, report)
-        print(f"{args.stage.upper()}: {report['status'].upper()}\nReport: {target}", flush=True)
+        summary = render(report)
+        (out / f"{args.stage}_summary.txt").write_text(summary + "\n", encoding="utf-8")
+        print(f"{args.stage.upper()}: {report['status'].upper()}\n{summary}", flush=True)
     return 0 if report["status"] == "passed" else 1
 
 

@@ -1,5 +1,19 @@
 # 下载完成后的两步测试
 
+## 截图回传约定（2026-10-06 更新）
+
+之后默认只截图精简摘要，完整 JSON/日志保留在服务器，不要求传出文件。测试结束时自动在终端打印摘要，并保存 `runtime/runs/resource_smoke/data_summary.txt`、`models_summary.txt`。
+
+已有 JSON 也可直接汇总，无需重跑数据检查或加载模型：
+
+```bash
+bash project/scripts/run.sh python3 -m project.scripts.summarize_smoke
+```
+
+截图最后的 DATA/MODELS 摘要即可；若失败，优先截图摘要中的 Phase/Error，信息不足时再按具体问题截对应日志。下文列出的 JSON 路径是服务器侧排错位置，正常回传不需要打开完整 JSON。
+
+首次远端截图已确认：train/dev 各抽查 50 题通过，404 段语料；L40S 上 Qwen3/vLLM 生成及 E5 404×768 编码通过。但查询输出为字面占位词 `query`，原问题拼接使检索仍能得到相关结果，因此原有 PASSED 仅证明调用链路。已消除提示词歧义并增加占位词拒绝；不是增加一条实验线。后续正式 V0 还需判断查询是否与证据缺口匹配。
+
 ## 1. 路径一次配置清楚
 
 假设服务器仓库在 `/home/h50061831/learn-verl-v0.5.0`，在仓库根目录的 `.env` 中设置：
@@ -41,6 +55,19 @@ bash project/scripts/run.sh --print-paths
 不用安装五个参考项目的依赖，也不用先升级当前训练环境。资源测试会强制离线读取本地权重。
 
 ## 2. 第一步：数据基本测试，无需 GPU
+
+### Dropbox 不可用时：ModelScope 下载
+
+已确认 [voidful/2WikiMultihopQA](https://modelscope.cn/datasets/voidful/2WikiMultihopQA) 提供原始形状的 train/dev JSON。已读取 dev 文件开头，第一条记录通过现有字段/支持句检查；未确认该镜像与官方 April 7 修复版完全一致。它缺少 id_aliases.json，先完成基础流程，别名评测后续补齐。
+
+```bash
+cd /home/h50061831/learn-verl-v0.5.0
+bash project/scripts/run.sh python3 -m project.scripts.download_2wiki
+```
+
+无需安装 ModelScope SDK，使用系统 curl。下载 train/dev 共约 738 MB，不下载无答案 test。固定镜像 revision，支持续传，逐文件核对服务器提供的大小和 SHA256。完整校验后才将 `.part` 文件转为 `.json`；已有相同文件跳过，不同文件或重复解压目录会报错而非覆盖。
+
+结果直接存放到 `runtime/data/raw/2wiki/train.json` 和 `dev.json`，无需解压或转换。下载报告在 `runtime/runs/resource_smoke/download_2wiki_report.json`。若下载失败，请发该报告和终端最后的报错；下载成功后继续下面的数据检查。此次替代来源应保留在最终数据说明中，不能描述为已核验的官方修复版。
 
 **运行命令：**
 
