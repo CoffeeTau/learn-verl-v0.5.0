@@ -3,10 +3,17 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
-import numpy as np
 import torch
 from verl.workers.reward_manager import register
 from project.training.protocol import model_segments, trajectory_score
+
+
+def reward_audit_json(records, groups):
+    # Count Python integers, not NumPy comparison scalars: JSON rejects np.int64.
+    varying = sum(1 for values in groups.values()
+                  if len(values) > 1 and max(values) > min(values))
+    return json.dumps({"episodes": len(records), "groups": len(groups),
+                       "varying_groups": varying, "records": records})
 
 
 @register("agentic_f1")
@@ -40,11 +47,9 @@ class SearchRewardManager:
             groups[str(task_id)].append(score["score"])
             records.append({**score, "task_id": str(task_id), "model_tokens": sum(mask),
                             "tool_template_tokens": length - sum(mask), "model_outputs": texts})
-        varying = sum(len(values) > 1 and np.ptp(values) > 0 for values in groups.values())
         if self.audit_dir:
             self.audit_dir.mkdir(parents=True, exist_ok=True)
             # Per-process file: no concurrent append corruption between Ray workers.
             with (self.audit_dir / f"rewards_{os.getpid()}.jsonl").open("a") as handle:
-                handle.write(json.dumps({"episodes": len(records), "groups": len(groups),
-                                         "varying_groups": varying, "records": records}) + "\n")
+                handle.write(reward_audit_json(records, groups) + "\n")
         return {"reward_tensor": rewards, "reward_extra_info": dict(extras)} if return_dict else rewards

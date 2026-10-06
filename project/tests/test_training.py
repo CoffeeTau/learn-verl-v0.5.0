@@ -30,6 +30,23 @@ class CharTokenizer:
 
 
 class TrainingTests(unittest.TestCase):
+    def test_reward_audit_json_roundtrip(self):
+        # Exercise the actual serialization boundary without loading GPU libraries.
+        registry = ModuleType('verl.workers.reward_manager')
+        registry.register = lambda name: lambda cls: cls
+        with patch.dict(sys.modules, {'torch': ModuleType('torch'), registry.__name__: registry}):
+            spec = importlib.util.spec_from_file_location('reward_under_test', Path('project/training/reward.py'))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        records = [{'score': 1.0, 'status': 'answered', 'model_tokens': 12,
+                    'tool_template_tokens': 100, 'model_outputs': ['<answer>yes</answer>']}]
+        for groups, expected in [({}, 0), ({'a': [0., 0.]}, 0),
+                                 ({'a': [0., 1.], 'b': [0.5, 0.5], 'c': [1.]}, 1)]:
+            decoded = json.loads(module.reward_audit_json(records, groups))
+            self.assertIs(type(decoded['varying_groups']), int)
+            self.assertEqual(decoded['varying_groups'], expected)
+            self.assertEqual(decoded['records'], records)
+
     def test_tools_cannot_supply_answer(self):
         tokenizer = CharTokenizer()
         search = tokenizer.encode('<search>Paris country</search>')
