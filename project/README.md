@@ -249,3 +249,5 @@ bash project/scripts/run.sh python3 your_script.py
 本地同步远端时同步源码，保留远端 `.env` 与 `runtime/`。若使用 rsync，明确排除这两项；Git 忽略规则不会自动成为 rsync 排除规则。
 
 监控入口：[TensorBoard：导入历史记录与 VS Code Remote SSH 访问](TENSORBOARD.md)。
+
+下一主干：[V2 纠错增强：两步检查、正式训练、实时曲线和最终评测](V2.md)。

@@ -7,7 +7,7 @@ from pathlib import Path
 from project.common import load_jsonl, save_json, show_summary
 
 
-def summarize(out, steps, exit_code):
+def summarize(out, steps, exit_code, version="v1"):
     out = Path(out)
     log = (out / "train.log").read_text(errors="replace") if (out / "train.log").exists() else ""
     metrics = {}
@@ -43,17 +43,29 @@ def summarize(out, steps, exit_code):
     saved = checkpoint.is_dir() and bool(list(checkpoint.glob("model_world_size_*_rank_*.pt")))
     passed = exit_code == 0 and updates_ok and saved and varied > 0 and masked > 0
     status = "PASSED" if passed else ("FAILED" if exit_code else "NEEDS_REVIEW")
+    correction = None
+    if version == "v2":
+        retrieval_path = out / "retrieval_audit.jsonl"
+        retrieval = load_jsonl(retrieval_path) if retrieval_path.exists() else []
+        correction = {"planned_calls": len(retrieval),
+                      "applied_calls": sum(bool(row["applied"]) for row in retrieval),
+                      "judged_answered_episodes": sum(row["status"] == "answered" and
+                          any("<judge>" in text for text in row.get("model_outputs", [])) for row in records)}
+        passed = passed and correction["applied_calls"] > 0 and correction["judged_answered_episodes"] > 0
+        status = "PASSED" if passed else ("FAILED" if exit_code else "NEEDS_REVIEW")
     report = {"status": status, "exit_code": exit_code, "steps": metrics, "expected_steps": steps,
-              "metric_source": metric_source,
+              "metric_source": metric_source, "correction": correction,
               "varying_groups": varied, "groups": groups, "statuses": statuses,
               "masked_tool_template_tokens": masked, "checkpoint_found": saved}
     save_json(out / "report.json", report)
-    lines = [f"=== V1 | {status} ===", f"Run: {out.name}",
+    lines = [f"=== {version.upper()} | {status} ===", f"Run: {out.name}",
              f"Updates logged: {len(metrics)}/{steps} | finite nonzero grad + sampled parameter delta: {updates_ok}",
              f"Metric source: {metric_source}",
              f"Reward groups with variation: {varied}/{groups} | episodes={len(records)}",
              f"Masked tool/template tokens: {masked} | terminal reward on model tokens only",
              f"Statuses: {statuses}", f"Final checkpoint: {saved} | exit={exit_code}"]
+    if correction is not None:
+        lines.append(f"Correction: {correction}")
     for step in sorted(metrics)[-2:]:
         row = metrics[step]
         lines.append(f"Step {step}: grad={row.get('actor/grad_norm', 0):.4g} delta={row.get('actor/probe_parameter_delta_max', 0):.4g}")

@@ -34,14 +34,14 @@ def parse_action(text):
     raise ValueError("invalid_action_format")
 
 
-def run_episode(question, generate, search, config):
+def run_episode(question, generate, search, config, system_prompt=SYSTEM_PROMPT, action_parser=None):
     """Only a question and public search results enter model messages.
 
     generate(messages) returns text, finish_reason, prompt_tokens, output_tokens,
     or raises ContextBudgetError. search(question, query, k) returns public hits.
     """
     started = time.monotonic()
-    messages = [{"role": "system", "content": SYSTEM_PROMPT.format(max_searches=config["max_searches"])},
+    messages = [{"role": "system", "content": system_prompt.format(max_searches=config["max_searches"])},
                 {"role": "user", "content": question}]
     result = {"answer": "", "sources": [], "searches": 0, "steps": [], "status": "budget_exhausted",
               "prompt_tokens": 0, "output_tokens": 0}
@@ -62,7 +62,9 @@ def run_episode(question, generate, search, config):
                 result["status"] = "generation_truncated"
                 break
             try:
-                action = parse_action(output["text"])
+                action = action_parser(output["text"], after_search=result["searches"] > 0) if action_parser else parse_action(output["text"])
+                if "judge" in action:
+                    step.update(judge=action["judge"], reason=action["reason"])
             except ValueError as exc:
                 result["status"] = str(exc)
                 break

@@ -28,11 +28,15 @@ def model_segments(ids, mask):
     return segments
 
 
-def trajectory_score(texts, gold, max_searches=4):
+def trajectory_score(texts, gold, max_searches=4, version="v1"):
     searches = 0
     for index, text in enumerate(texts):
         try:
-            action = parse_action(text)
+            if version == "v2":
+                from project.agent.correction import parse_action as parse_correction
+                action = parse_correction(text, after_search=searches > 0)
+            else:
+                action = parse_action(text)
         except ValueError as exc:
             return {"score": 0.0, "em": 0.0, "status": str(exc), "searches": searches}
         if action["kind"] == "search":

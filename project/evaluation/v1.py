@@ -51,16 +51,20 @@ def export_inventory(path):
     return inventory
 
 
-def main():
+def main(version="v1"):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--train-run', required=True)
+    parser.add_argument('--train-run', required=version == 'v1')
     parser.add_argument('--baseline-run', default='dev_20261006T043535Z_7da4f2')
+    if version == "v2":
+        parser.add_argument("--v1-eval", default="dev_20261006T151952Z_111fcb")
     args = parser.parse_args()
-    for name in (args.train_run, args.baseline_run):
+    if args.train_run is None:
+        args.train_run = json.loads((resource_path("AGENTIC_RUNS_DIR") / version / "latest_run.json").read_text())["run_id"]
+    for name in (args.train_run, args.baseline_run, getattr(args, "v1_eval", "valid")):
         if not re.fullmatch(r'[A-Za-z0-9_-]+', name):
             parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
-    run = runs / 'v1' / args.train_run
+    run = runs / version / args.train_run
     baseline = runs / 'v0' / args.baseline_run
     report = json.loads((run / 'report.json').read_text())
     manifest = json.loads((run / 'manifest.json').read_text())
@@ -79,9 +83,12 @@ def main():
     if manifest['data']['source_manifest_sha256'] != sha256(data / 'manifest.json'):
         raise ValueError('Training dataset manifest changed')
     model = export_model(run, step)
-    print('Evaluating V1 on full dev with V0 config, tokenizer, protocol and scoring.', flush=True)
+    print(f'Evaluating {version.upper()} on full dev with clean retrieval and fixed resource budgets.', flush=True)
+    extra_args = []
+    if version == "v2":
+        extra_args = ["--protocol", "v2", "--compare-run", str(runs / "v1_eval" / args.v1_eval)]
     return subprocess.call([sys.executable, '-u', '-m', 'project.evaluation.v0',
-                            '--model-path', str(model), '--baseline-run', str(baseline)])
+                            '--model-path', str(model), '--baseline-run', str(baseline)] + extra_args)
 
 
 if __name__ == '__main__':

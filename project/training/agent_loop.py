@@ -20,8 +20,13 @@ class SearchAgentLoop(AgentLoopBase):
 
     async def run(self, messages, sampling_params):
         cfg = self.settings
+        version = getattr(self, "version", "v1")
+        prompt_text = SYSTEM_PROMPT
+        if version == "v2":
+            from project.agent.correction import SYSTEM_PROMPT as prompt_text
+            from project.agent.correction import parse_action as parse_correction
         messages = list(messages)
-        if len(messages) != 2 or messages[0]["content"] != SYSTEM_PROMPT.format(max_searches=cfg["max_searches"]):
+        if len(messages) != 2 or messages[0]["content"] != prompt_text.format(max_searches=cfg["max_searches"]):
             raise ValueError("Unexpected training prompt")
         question = messages[1]["content"]
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
@@ -51,13 +56,18 @@ class SearchAgentLoop(AgentLoopBase):
             if len(tokens) >= cfg["max_new_tokens"]:
                 break
             try:
-                action = parse_action(self.tokenizer.decode(tokens, skip_special_tokens=True))
+                text = self.tokenizer.decode(tokens, skip_special_tokens=True)
+                action = parse_correction(text, after_search=search_count > 0) if version == "v2" else parse_action(text)
             except ValueError:
                 break
             if action["kind"] == "answer" or search_count == cfg["max_searches"]:
                 break
             start = time.monotonic()
-            hits = await self.retriever.search.remote(question, action["query"], cfg["top_k"])
+            if version == "v2":
+                hits = await self.retriever.search_v2.remote(question, action["query"], cfg["top_k"],
+                                                            search_count, self.perturb)
+            else:
+                hits = await self.retriever.search.remote(question, action["query"], cfg["top_k"])
             metrics.tool_calls += time.monotonic() - start
             observation = "\n\n".join(f"[{hit['id']}] {html.escape(hit['title'])}\n{html.escape(hit['text'])}"
                                           for hit in hits)
@@ -73,3 +83,12 @@ class SearchAgentLoop(AgentLoopBase):
             raise ValueError("Invalid trajectory length")
         return AgentLoopOutput(prompt_ids=prompt, response_ids=response, response_mask=mask,
                                num_turns=turns, metrics=metrics)
+
+
+class CorrectionAgentLoop(SearchAgentLoop):
+    def __init__(self, trainer_config, server_manager, tokenizer, perturb=False, **kwargs):
+        super().__init__(trainer_config, server_manager, tokenizer, **kwargs)
+        self.version = "v2"
+        # Train and validation have different registry entries. This flag is never
+        # inferred from temperature or the content of the question.
+        self.perturb = bool(perturb)

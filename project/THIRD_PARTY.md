@@ -21,3 +21,7 @@ The E5 implementation also agrees with the [official model card](https://hugging
 ## V1 integration
 
 `project/training/agent_loop.py` implements this checkout’s `AgentLoopBase` / `AgentLoopOutput` interface, following the token/response-mask contract in `verl/experimental/agent_loop/agent_loop.py` and `tool_agent_loop.py` (Apache-2.0). Training uses this checkout’s FSDP, asynchronous vLLM, GRPO advantages and checkpoint machinery, rather than importing another reference repository’s veRL. Search protocol, E5 retrieval and answer scoring are reused from the project modules attributed above.
+
+## V2 correction
+
+`project/agent/correction.py` is project-specific code inspired by the JUDGE/re-plan mechanism described in `project_resource/ReSeek/README.md`. It does not copy `reseek_regex.py` or its answer-overlap process reward. Hard-episode construction and terminal-F1 scoring remain project-specific; this is not a full ReSeek reproduction.

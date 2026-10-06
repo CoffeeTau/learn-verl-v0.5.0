@@ -19,7 +19,8 @@ def reward_audit_json(records, groups):
 @register("agentic_f1")
 class SearchRewardManager:
     def __init__(self, tokenizer, num_examine=0, compute_score=None, reward_fn_key=None,
-                 audit_dir=None, max_searches=4, max_new_tokens=512):
+                 audit_dir=None, max_searches=4, max_new_tokens=512, version="v1"):
+        self.version = version
         self.tokenizer = tokenizer
         self.audit_dir = Path(audit_dir) if audit_dir else None
         self.max_searches, self.max_new_tokens = max_searches, max_new_tokens
@@ -37,7 +38,7 @@ class SearchRewardManager:
                 raise ValueError("Reward must land on a sampled model token")
             texts = [self.tokenizer.decode(part, skip_special_tokens=True) for part in segments]
             gold = data.non_tensor_batch["reward_model"][i]["ground_truth"]
-            score = trajectory_score(texts, gold, self.max_searches)
+            score = trajectory_score(texts, gold, self.max_searches, version=self.version)
             if any(len(part) >= self.max_new_tokens for part in segments):
                 score.update(score=0.0, em=0.0, status="generation_truncated")
             rewards[i, length - 1] = score["score"]
@@ -48,8 +49,9 @@ class SearchRewardManager:
             records.append({**score, "task_id": str(task_id), "model_tokens": sum(mask),
                             "tool_template_tokens": length - sum(mask), "model_outputs": texts})
         if self.audit_dir:
-            self.audit_dir.mkdir(parents=True, exist_ok=True)
+            audit_dir = self.audit_dir / "validation" if data.meta_info.get("validate", False) else self.audit_dir
+            audit_dir.mkdir(parents=True, exist_ok=True)
             # Per-process file: no concurrent append corruption between Ray workers.
-            with (self.audit_dir / f"rewards_{os.getpid()}.jsonl").open("a") as handle:
+            with (audit_dir / f"rewards_{os.getpid()}.jsonl").open("a") as handle:
                 handle.write(reward_audit_json(records, groups) + "\n")
         return {"reward_tensor": rewards, "reward_extra_info": dict(extras)} if return_dict else rewards

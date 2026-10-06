@@ -41,6 +41,11 @@ def summary_text(report, results, relative_run):
         baseline = report["baseline_metrics"]
         lines.append(f"Vs V0: EM {m['em_percent'] - baseline['em_percent']:+.2f} pp | "
                      f"F1 {m['f1_percent'] - baseline['f1_percent']:+.2f} pp")
+    if report.get("comparison_metrics") and report["status"] == "passed":
+        reference = report["comparison_metrics"]
+        lines.append(f"Vs V1: EM {m['em_percent'] - reference['em_percent']:+.2f} pp | "
+                     f"F1 {m['f1_percent'] - reference['f1_percent']:+.2f} pp")
+        lines.append("V2 adds judge protocol; clean retrieval, same dev and resource budgets.")
     # Two representative cases, no long documents or absolute machine paths.
     samples = []
     for predicate in (lambda row: row["em"] == 0, lambda row: row["em"] == 1):
@@ -77,10 +82,14 @@ def validate_baseline(manifest, report, dataset, planned):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
+    parser.add_argument("--protocol", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--compare-run", type=Path, help="Optional completed V1 reference for V2")
     parser.add_argument("--limit", type=int, default=None, help="Optional partial dev run; omitted = all 200")
     parser.add_argument("--model-path", type=Path, help="Exported V1 policy; tokenizer stays identical to V0")
     parser.add_argument("--baseline-run", type=Path, help="Saved V0 run directory for matched V1 evaluation")
     args = parser.parse_args()
+    if args.protocol == "v2" and not args.model_path:
+        parser.error("V2 evaluation requires an exported model")
     if bool(args.model_path) != bool(args.baseline_run):
         parser.error("--model-path and --baseline-run must be supplied together")
     if args.baseline_run and (args.limit is not None or args.config):
@@ -94,8 +103,11 @@ def main():
         if baseline_report["status"] != "passed" or baseline_manifest.get("limit") is not None:
             raise ValueError("Baseline must be a completed full dev evaluation")
         config = baseline_manifest["config"]
-    variant = "V1" if args.model_path else "V0"
-    group = "v1_eval" if args.model_path else "v0"
+    variant = "V2" if args.protocol == "v2" else ("V1" if args.model_path else "V0")
+    prompt_text, action_parser = SYSTEM_PROMPT, None
+    if args.protocol == "v2":
+        from project.agent.correction import SYSTEM_PROMPT as prompt_text, parse_action as action_parser
+    group = "v2_eval" if args.protocol == "v2" else ("v1_eval" if args.model_path else "v0")
     runs = resource_path("AGENTIC_RUNS_DIR") / group
     run_id = "dev_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + uuid4().hex[:6]
     out = runs / run_id
@@ -122,6 +134,15 @@ def main():
             raise ValueError("Empty development split")
         if baseline_manifest:
             validate_baseline(baseline_manifest, baseline_report, dataset, planned)
+        if args.compare_run:
+            comparison = json.loads((args.compare_run / "report.json").read_text())
+            comparison_manifest = json.loads((args.compare_run / "manifest.json").read_text())
+            if comparison["status"] != "passed" or comparison_manifest.get("limit") is not None:
+                raise ValueError("V1 comparison must be complete")
+            validate_baseline(comparison_manifest, comparison, dataset, planned)
+            if comparison_manifest["config"] != config or comparison_manifest["index_manifest"] != baseline_manifest["index_manifest"]:
+                raise ValueError("V1 comparison settings differ")
+            report.update(comparison_metrics=comparison["metrics"], comparison_run=str(args.compare_run))
         labels = {row["id"]: row for row in load_jsonl(data_dir / "dev.labels.jsonl")}
         report["metrics"] = aggregate([], planned)
         report["full_dev_size"] = dataset["sizes"]["dev"]
@@ -141,7 +162,7 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), local_files_only=True)
         manifest = {"code": code_info(), "config": config, "question_split": "dev", "limit": args.limit,
                     "dataset_manifest": dataset, "index_manifest": retriever.manifest,
-                    "policy_model": model_inventory(model_path), "system_prompt": SYSTEM_PROMPT,
+                    "policy_model": model_inventory(model_path), "system_prompt": prompt_text, "protocol": args.protocol,
                     "enable_thinking": False, "scoring": "canonical_answer_em_f1_no_aliases",
                     "tokenizer_path": str(tokenizer_path), "history_mode": "v0_rerender",
                     "baseline_run": str(args.baseline_run) if args.baseline_run else None}
@@ -168,7 +189,8 @@ def main():
         with (out / "trajectories.jsonl").open("w", encoding="utf-8") as handle:
             for number, row in enumerate(questions, 1):
                 # Only row['question'] crosses into the agent. Labels are read for scoring afterwards.
-                result = run_episode(row["question"], generate, retriever.search, config)
+                result = run_episode(row["question"], generate, retriever.search, config,
+                                     system_prompt=prompt_text, action_parser=action_parser)
                 gold = labels[row["id"]]
                 score = score_answer(result["answer"], gold["answer"]) if result["status"] == "answered" else {"em": 0.0, "f1": 0.0}
                 retrieved = {hit["id"] for step in result["steps"] for hit in step.get("hits", [])}

@@ -233,6 +233,7 @@ class _TensorboardAdapter:
     def log(self, data, step):
         for key in data:
             self.writer.add_scalar(key, data[key], step)
+        self.writer.flush()
 
     def finish(self):
         self.writer.close()

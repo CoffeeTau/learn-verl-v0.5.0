@@ -6,18 +6,21 @@ from project.common import config_from, load_jsonl, resource_path, save_json, sh
 from project.training.protocol import continuation_ids
 
 
-def prepare():
+def prepare(version="v1"):
+    prompt = SYSTEM_PROMPT
+    if version == "v2":
+        from project.agent.correction import SYSTEM_PROMPT as prompt
     import pyarrow as pa
     import pyarrow.parquet as pq
     from transformers import AutoTokenizer
     cfg = config_from()
     source = resource_path("AGENTIC_PROCESSED_DATA_DIR")
     manifest = json.loads((source / "manifest.json").read_text())
-    out = source / "verl"
+    out = source / ("verl_v2" if version == "v2" else "verl")
     out.mkdir(exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(str(resource_path("AGENTIC_MODEL_DIR")), local_files_only=True)
     # Verify the hard-coded continuation against this actual local Qwen3 template.
-    base = [{"role": "system", "content": SYSTEM_PROMPT.format(max_searches=cfg["max_searches"])},
+    base = [{"role": "system", "content": prompt.format(max_searches=cfg["max_searches"])},
             {"role": "user", "content": "Template check"}]
     raw = tokenizer.apply_chat_template(base, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     suffix = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -43,17 +46,17 @@ def prepare():
             if len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
                                                  enable_thinking=False)) > 512:
                 raise ValueError(f"Prompt exceeds 512 tokens: {row['id']}; do not silently truncate")
-            records.append({"data_source": "agentic_2wiki", "agent_name": "agentic_search", "prompt": messages,
+            records.append({"data_source": "agentic_2wiki", "agent_name": ("agentic_correction_train" if split == "train" else "agentic_correction_eval") if version == "v2" else "agentic_search", "prompt": messages,
                             "ability": "multi_hop_search", "reward_model": {"style": "rule", "ground_truth": labels[row['id']]['answer']},
                             "extra_info": {"split": split, "index": i, "task_id": row["id"]}})
         path = out / f"{split}.parquet"
         pq.write_table(pa.Table.from_pylist(records), path)
         sizes[split], files[path.name] = len(records), sha256(path)
     report = {"sizes": sizes, "files": files, "source_manifest_sha256": sha256(source / "manifest.json"),
-              "corpus_sha256": manifest["corpus_sha256"], "task": cfg, "enable_thinking": False}
+              "corpus_sha256": manifest["corpus_sha256"], "task": cfg, "enable_thinking": False, "version": version}
     save_json(out / "manifest.json", report)
-    show_summary(resource_path("AGENTIC_RUNS_DIR") / "v1_prepare",
-                 f"=== V1 PREPARE | PASSED ===\nTasks: train={sizes['train']} dev={sizes['dev']} | test untouched\n"
+    show_summary(resource_path("AGENTIC_RUNS_DIR") / f"{version}_prepare",
+                 f"=== {version.upper()} PREPARE | PASSED ===\nTasks: train={sizes['train']} dev={sizes['dev']} | test untouched\n"
                  "Prompt: system + question | gold: reward side only\n"
                  "Qwen3 continuation: checked | no-thinking | prompt <=512\n"
                  f"Corpus SHA256: {manifest['corpus_sha256'][:16]}")
