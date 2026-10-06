@@ -23,6 +23,24 @@ from pathlib import Path
 from typing import Any
 
 
+class _JsonlLoggingAdapter:
+    """Write scalar metrics in the trainer process, independently of Ray stdout."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(self, data, step):
+        import json
+        import numbers
+
+        scalars = {key: float(value) for key, value in data.items() if isinstance(value, numbers.Real)}
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"step": int(step), "metrics": scalars}) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 class Tracking:
     """A unified tracking interface for logging experiment data to multiple backends.
 
@@ -34,7 +52,7 @@ class Tracking:
         logger: Dictionary of initialized logger instances for each backend.
     """
 
-    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml"]
+    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml", "jsonl"]
 
     def __init__(self, project_name, experiment_name, default_backend: str | list[str] = "console", config=None):
         if isinstance(default_backend, str):
@@ -48,6 +66,9 @@ class Tracking:
                 assert backend in self.supported_backend, f"{backend} is not supported"
 
         self.logger = {}
+
+        if "jsonl" in default_backend:
+            self.logger["jsonl"] = _JsonlLoggingAdapter(config["trainer"]["metrics_jsonl"])
 
         if "tracking" in default_backend or "wandb" in default_backend:
             import wandb

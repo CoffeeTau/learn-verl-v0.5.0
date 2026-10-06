@@ -121,6 +121,25 @@ class TrainingTests(unittest.TestCase):
             (root / 'reward_audit/rewards_1.jsonl').write_text(json.dumps(batch) + '\n')
             self.assertTrue(summarize(root, 2, 0))
 
+    def test_durable_metrics_survive_missing_console_step(self):
+        spec = importlib.util.spec_from_file_location('tracking_under_test', Path('verl/utils/tracking.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'main_example'
+            root.mkdir()
+            logger = module.Tracking('test', 'test', default_backend=['jsonl'],
+                                     config={'trainer': {'metrics_jsonl': str(root / 'metrics.jsonl')}})
+            for step in (1, 2):
+                logger.log({'actor/grad_norm': .1, 'actor/probe_parameter_delta_max': 1e-6}, step)
+            (root / 'train.log').write_text('step:1 - actor/grad_norm:0.1\n')
+            summarize(root, 2, 0)
+            report = json.loads((root / 'report.json').read_text())
+            self.assertEqual(set(report['steps']), {'1', '2'})
+            self.assertEqual(report['metric_source'], 'metrics.jsonl')
+            # Missing checkpoint/reward evidence must still prevent PASSED.
+            self.assertEqual(report['status'], 'NEEDS_REVIEW')
+
     def test_summary_never_promotes_zero_update(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'smoke_example'

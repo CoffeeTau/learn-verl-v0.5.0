@@ -54,7 +54,8 @@ def build_config(out, data_dir, prepared, gpus, steps, smoke):
                                         "max_searches": prepared["task"]["max_searches"],
                                         "max_new_tokens": prepared["task"]["max_new_tokens"]},
         "trainer.project_name": "agentic_search", "trainer.experiment_name": out.name,
-        "trainer.logger": ["console"], "trainer.nnodes": 1, "trainer.n_gpus_per_node": gpus,
+        "trainer.metrics_jsonl": str(out / "metrics.jsonl"),
+        "trainer.logger": ["jsonl", "console"], "trainer.nnodes": 1, "trainer.n_gpus_per_node": gpus,
         "trainer.total_epochs": 1, "trainer.total_training_steps": steps,
         "trainer.save_freq": 1 if smoke else 25, "trainer.test_freq": -1,
         "trainer.val_before_train": False, "trainer.resume_mode": "disable",
@@ -66,7 +67,7 @@ def build_config(out, data_dir, prepared, gpus, steps, smoke):
                     "corpus_sha256": prepared["corpus_sha256"]},
     }
     # Known upstream keys must exist; only explicit project extension keys may be new.
-    new_keys = {"agentic", "reward_model.external_lib", "reward_model.reward_kwargs",
+    new_keys = {"trainer.metrics_jsonl", "agentic", "reward_model.external_lib", "reward_model.reward_kwargs",
                 "actor_rollout_ref.actor.update_probe", "data.seed", "actor_rollout_ref.rollout.seed"}
     for key, value in values.items():
         if key not in new_keys and OmegaConf.select(config, key, default="__missing__") == "__missing__":
@@ -96,7 +97,7 @@ def main():
             raise ValueError(f"Need {args.gpus} visible GPUs; found {torch.cuda.device_count()}")
         build_config(out, data_dir, prepared, args.gpus, steps, args.mode == "smoke")
         repo = Path(__file__).resolve().parents[2]
-        core_files = ["verl/trainer/ppo/reward.py", "verl/workers/actor/dp_actor.py",
+        core_files = ["verl/utils/tracking.py", "verl/trainer/ppo/reward.py", "verl/workers/actor/dp_actor.py",
                       "verl/workers/rollout/vllm_rollout/vllm_async_server.py"]
         save_json(out / "manifest.json", {"code": code_info(), "core_sha256": {p: sha256(repo / p) for p in core_files}, "data": prepared, "mode": args.mode,
                                           "policy": model_inventory(resource_path("AGENTIC_MODEL_DIR")),

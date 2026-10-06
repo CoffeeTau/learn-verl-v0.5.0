@@ -18,6 +18,13 @@ def summarize(out, steps, exit_code):
         if step:
             metrics[int(step[1])] = {key: float(value) for key, value in
                                     re.findall(r"(actor/[a-zA-Z_]+):(?:np\.float(?:32|64)\()?([-+\deE.]+|nan|inf)", line)}
+    metric_source = "console"
+    if (out / "metrics.jsonl").exists():
+        # Authoritative synchronous records override console output, which Ray
+        # may not forward completely before shutdown. Never invent absent steps.
+        metric_source = "metrics.jsonl"
+        metrics = {int(row["step"]): row["metrics"] for row in load_jsonl(out / "metrics.jsonl")
+                   if "actor/grad_norm" in row["metrics"]}
     batches = []
     for path in sorted((out / "reward_audit").glob("*.jsonl")):
         batches.extend(load_jsonl(path))
@@ -37,11 +44,13 @@ def summarize(out, steps, exit_code):
     passed = exit_code == 0 and updates_ok and saved and varied > 0 and masked > 0
     status = "PASSED" if passed else ("FAILED" if exit_code else "NEEDS_REVIEW")
     report = {"status": status, "exit_code": exit_code, "steps": metrics, "expected_steps": steps,
+              "metric_source": metric_source,
               "varying_groups": varied, "groups": groups, "statuses": statuses,
               "masked_tool_template_tokens": masked, "checkpoint_found": saved}
     save_json(out / "report.json", report)
     lines = [f"=== V1 | {status} ===", f"Run: {out.name}",
              f"Updates logged: {len(metrics)}/{steps} | finite nonzero grad + sampled parameter delta: {updates_ok}",
+             f"Metric source: {metric_source}",
              f"Reward groups with variation: {varied}/{groups} | episodes={len(records)}",
              f"Masked tool/template tokens: {masked} | terminal reward on model tokens only",
              f"Statuses: {statuses}", f"Final checkpoint: {saved} | exit={exit_code}"]

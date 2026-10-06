@@ -92,3 +92,10 @@ python3 -m unittest discover -s project/tests -v
 ```
 
 当前 21 个 CPU 测试通过，覆盖 token 前缀保留、工具文本不能冒充奖励答案、严格格式/预算、失败摘要及已有数据/V0 测试。本机缺少 torch/transformers/Hydra，未执行真实模型加载、Hydra 组合或分布式更新；这些由远端两步检查确认。
+
+
+## 两步运行后的日志修复（2026-10-06）
+
+远端 run `smoke_20261006T084355Z_8af3fe` 正常退出，完成两次各 64 条奖励计算，组内差异分别为 2/16 和 3/16；step 1/2 各有 8 个非空模型分片，checkpoint marker=2。第 1 步有非零梯度和参数变化证据。原始控制台缺少第 2 步指标及末尾 final-validation 消息，故旧报告保留 NEEDS_REVIEW，不补造第二步数值。源码在保存 checkpoint 后才输出指标，运行结束马上 ray.shutdown；证据符合最后的 Ray 日志未完整转发，但没有单独复现实证。
+
+后续训练启用 `verl/utils/tracking.py` 的可选 jsonl 后端，在 trainer 进程内每步同步写入 `metrics.jsonl` 并 fsync；摘要优先读取它，不依赖控制台转发。这是新增的第 4 处核心适配，同步时须包含。旧日志无法追补，但无需为日志缺失重跑 smoke；下一次按上文 main 命令直接跑固定 125 步，截图 `runtime/runs/v1/latest_summary.txt`。不会续接 smoke 权重，也不把本次结果视为质量收益。
