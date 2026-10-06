@@ -4,6 +4,7 @@ from collections import Counter
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import traceback
 from uuid import uuid4
 
@@ -29,13 +30,17 @@ def aggregate(results, planned):
 
 def summary_text(report, results, relative_run):
     m = report["metrics"]
-    lines = [f"=== V0 DEV | {report['status'].upper()} ===", f"Run: {relative_run}",
+    lines = [f"=== {report.get('variant', 'V0')} DEV | {report['status'].upper()} ===", f"Run: {relative_run}",
              f"Tasks: {m['completed']}/{m['planned']} | concurrency=1 | max_searches={report['config']['max_searches']}",
              f"Answer EM={m['em_percent']:.2f}% | F1={m['f1_percent']:.2f}% (canonical only)",
              f"Mean: searches={m['mean_searches']:.2f} | tokens={m['mean_tokens']:.0f} | seconds={m['mean_seconds']:.2f}",
              f"Status counts: {m['statuses']}",
              f"Insufficient evidence={m['insufficient_evidence']} | invalid citation IDs={m['invalid_citations']}",
              "Tokens include repeated prompt reads; episode time excludes model/index loading."]
+    if report.get("baseline_metrics") and report["status"] == "passed":
+        baseline = report["baseline_metrics"]
+        lines.append(f"Vs V0: EM {m['em_percent'] - baseline['em_percent']:+.2f} pp | "
+                     f"F1 {m['f1_percent'] - baseline['f1_percent']:+.2f} pp")
     # Two representative cases, no long documents or absolute machine paths.
     samples = []
     for predicate in (lambda row: row["em"] == 0, lambda row: row["em"] == 1):
@@ -54,17 +59,50 @@ def summary_text(report, results, relative_run):
     return "\n".join(lines)
 
 
+def validate_baseline(manifest, report, dataset, planned):
+    """Reject changing the questions, labels or action protocol between policies."""
+    if manifest["system_prompt"] != SYSTEM_PROMPT or manifest["enable_thinking"] is not False:
+        raise ValueError("Prompt/thinking mode differs from V0")
+    if manifest["scoring"] != "canonical_answer_em_f1_no_aliases":
+        raise ValueError("Scoring differs from V0")
+    for name in ("dev.jsonl", "dev.labels.jsonl"):
+        if dataset["files"][name] != manifest["dataset_manifest"]["files"][name]:
+            raise ValueError(f"Development input differs from V0: {name}")
+    if dataset["corpus_sha256"] != manifest["dataset_manifest"]["corpus_sha256"]:
+        raise ValueError("Corpus differs from V0")
+    if report["metrics"]["completed"] != planned or report["metrics"]["planned"] != planned:
+        raise ValueError("Development task count differs from V0")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     parser.add_argument("--limit", type=int, default=None, help="Optional partial dev run; omitted = all 200")
+    parser.add_argument("--model-path", type=Path, help="Exported V1 policy; tokenizer stays identical to V0")
+    parser.add_argument("--baseline-run", type=Path, help="Saved V0 run directory for matched V1 evaluation")
     args = parser.parse_args()
+    if bool(args.model_path) != bool(args.baseline_run):
+        parser.error("--model-path and --baseline-run must be supplied together")
+    if args.baseline_run and (args.limit is not None or args.config):
+        parser.error("Matched V1 evaluation uses the complete dev split and saved V0 config")
     config = config_from(args.config)
-    runs = resource_path("AGENTIC_RUNS_DIR") / "v0"
+    baseline_manifest = None
+    baseline_report = None
+    if args.baseline_run:
+        baseline_manifest = json.loads((args.baseline_run / "manifest.json").read_text())
+        baseline_report = json.loads((args.baseline_run / "report.json").read_text())
+        if baseline_report["status"] != "passed" or baseline_manifest.get("limit") is not None:
+            raise ValueError("Baseline must be a completed full dev evaluation")
+        config = baseline_manifest["config"]
+    variant = "V1" if args.model_path else "V0"
+    group = "v1_eval" if args.model_path else "v0"
+    runs = resource_path("AGENTIC_RUNS_DIR") / group
     run_id = "dev_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + uuid4().hex[:6]
     out = runs / run_id
     out.mkdir(parents=True, exist_ok=False)
-    report = {"status": "running", "config": config, "metrics": aggregate([], 0)}
+    report = {"status": "running", "variant": variant, "config": config, "metrics": aggregate([], 0)}
+    if baseline_report:
+        report.update(baseline_metrics=baseline_report["metrics"], baseline_run=str(args.baseline_run))
     results = []
     planned = 0
     try:
@@ -82,6 +120,8 @@ def main():
         planned = len(questions)
         if not planned:
             raise ValueError("Empty development split")
+        if baseline_manifest:
+            validate_baseline(baseline_manifest, baseline_report, dataset, planned)
         labels = {row["id"]: row for row in load_jsonl(data_dir / "dev.labels.jsonl")}
         report["metrics"] = aggregate([], planned)
         report["full_dev_size"] = dataset["sizes"]["dev"]
@@ -92,16 +132,23 @@ def main():
                                    resource_path("AGENTIC_RETRIEVER_DIR"))
         if retriever.manifest["corpus_sha256"] != dataset["corpus_sha256"]:
             raise ValueError("Dataset and retrieval corpus versions differ")
-        model_path = resource_path("AGENTIC_MODEL_DIR")
-        tokenizer = AutoTokenizer.from_pretrained(str(model_path), local_files_only=True)
+        if baseline_manifest and retriever.manifest != baseline_manifest["index_manifest"]:
+            raise ValueError("Retrieval index differs from V0")
+        model_path = args.model_path or resource_path("AGENTIC_MODEL_DIR")
+        tokenizer_path = resource_path("AGENTIC_MODEL_DIR")
+        if baseline_manifest and model_inventory(tokenizer_path) != baseline_manifest["policy_model"]:
+            raise ValueError("Original V0 model/tokenizer inventory changed")
+        tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), local_files_only=True)
         manifest = {"code": code_info(), "config": config, "question_split": "dev", "limit": args.limit,
                     "dataset_manifest": dataset, "index_manifest": retriever.manifest,
                     "policy_model": model_inventory(model_path), "system_prompt": SYSTEM_PROMPT,
-                    "enable_thinking": False, "scoring": "canonical_answer_em_f1_no_aliases"}
+                    "enable_thinking": False, "scoring": "canonical_answer_em_f1_no_aliases",
+                    "tokenizer_path": str(tokenizer_path), "history_mode": "v0_rerender",
+                    "baseline_run": str(args.baseline_run) if args.baseline_run else None}
         save_json(out / "manifest.json", manifest)
         save_json(out / "resolved_config.json", {**config, "model_path": str(model_path), "dataset_path": str(data_dir)})
         save_json(out / "report.json", report)
-        llm = LLM(model=str(model_path), tokenizer=str(model_path), dtype="bfloat16",
+        llm = LLM(model=str(model_path), tokenizer=str(tokenizer_path), dtype="bfloat16",
                   tensor_parallel_size=1, max_model_len=config["max_context_tokens"],
                   gpu_memory_utilization=config["gpu_memory_utilization"], max_num_seqs=1,
                   enforce_eager=True, seed=config["seed"])
@@ -132,7 +179,7 @@ def main():
                 handle.flush()
                 results.append(result)
                 if number % 10 == 0 or number == planned:
-                    print(f"V0 dev: {number}/{planned}", flush=True)
+                    print(f"{variant} dev: {number}/{planned}", flush=True)
                     report["metrics"] = aggregate(results, planned)
                     save_json(out / "report.json", report)
         report["status"] = "passed"
@@ -143,7 +190,7 @@ def main():
     finally:
         report["metrics"] = aggregate(results, planned)
         save_json(out / "report.json", report)
-        text = summary_text(report, results, f"runs/v0/{run_id}")
+        text = summary_text(report, results, f"runs/{group}/{run_id}")
         show_summary(out, text)
         (runs / "latest_summary.txt").write_text(text + "\n", encoding="utf-8")
         save_json(runs / "latest_run.json", {"run_id": run_id, "status": report["status"]})

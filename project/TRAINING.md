@@ -99,3 +99,31 @@ python3 -m unittest discover -s project/tests -v
 远端 run `smoke_20261006T084355Z_8af3fe` 正常退出，完成两次各 64 条奖励计算，组内差异分别为 2/16 和 3/16；step 1/2 各有 8 个非空模型分片，checkpoint marker=2。第 1 步有非零梯度和参数变化证据。原始控制台缺少第 2 步指标及末尾 final-validation 消息，故旧报告保留 NEEDS_REVIEW，不补造第二步数值。源码在保存 checkpoint 后才输出指标，运行结束马上 ray.shutdown；证据符合最后的 Ray 日志未完整转发，但没有单独复现实证。
 
 后续训练启用 `verl/utils/tracking.py` 的可选 jsonl 后端，在 trainer 进程内每步同步写入 `metrics.jsonl` 并 fsync；摘要优先读取它，不依赖控制台转发。这是新增的第 4 处核心适配，同步时须包含。旧日志无法追补，但无需为日志缺失重跑 smoke；下一次按上文 main 命令直接跑固定 125 步，截图 `runtime/runs/v1/latest_summary.txt`。不会续接 smoke 权重，也不把本次结果视为质量收益。
+
+## V1 主训练完成后的同集评测
+
+用户截图确认 run `main_20261006T090840Z_c41e35`：125/125 步均有有限非零梯度与参数抽样变化；8000 条轨迹；241/2000 组奖励存在差异；answered=7995、invalid_action_format=5；最终 checkpoint 存在且退出码 0。训练链路通过，不等于开发集提升。组内同分可能全对、全错或相同部分分，不能将另外 1759 组一律视为答错。
+
+现已实现导出与 V1 评测入口。同步后执行一次：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 bash project/scripts/run.sh \
+  bash project/scripts/mainline.sh v1-eval \
+  --train-run main_20261006T090840Z_c41e35 \
+  --baseline-run dev_20261006T043535Z_7da4f2
+```
+
+流程：调用本仓库 `python3 -m verl.model_merger merge --backend fsdp` 合并最终 step 125 的 actor 权重，然后复用 V0 评测实现，遍历相同 200 题 dev。合并在 CPU 内存中完成，评测使用 1 张 L40S；不训练、不重建索引、不读取 test，不覆盖原始模型或 V0 结果。
+
+比较前检查 V0 已完成全量评测、题目与标签 hash、共享语料、索引 manifest、原始 tokenizer/model inventory、提示词与评分口径；读取 V0 保存的实验配置，固定非思考、temperature=0、top-3、4 次搜索和原预算，只替换策略权重。评测两种权重均采用原 V0 每轮重渲染历史的方式；V1 训练保留历史 token，二者存在上下文实现差异，不能声称训练/评测输入逐 token 一致，也不能仅凭最终指标归因该差异。
+
+输出位置：
+
+- 导出日志：`runtime/runs/v1/main_20261006T090840Z_c41e35/export_step_125.log`
+- 导出模型：`runtime/runs/v1/main_20261006T090840Z_c41e35/hf_step_125/`
+- **截图回传**：终端最后 `=== V1 DEV | ... ===`，或 `runtime/runs/v1_eval/latest_summary.txt`
+- 详细轨迹与报告：`runtime/runs/v1_eval/dev_<时间>_<ID>/{trajectories.jsonl,report.json,manifest.json}`
+
+摘要包含 EM/F1、相对 V0 的百分点变化、搜索次数、token 用量和错误状态。若导出失败，截图 `export_step_125.log` 末尾 traceback；若评测失败，先截图最终失败摘要。导出成功后再次调用会校验并复用导出文件，但会新建评测 run，不覆盖旧结果。
+
+本地已通过已有 23 项 CPU 测试，以及新增 2 项标签变更拒绝/导出复用检查；新增导出测试使用模拟权重，真实 FSDP 合并和 V1 推理由上述远端命令验证。按当前约定，完成这次评测后再配置 TensorBoard。

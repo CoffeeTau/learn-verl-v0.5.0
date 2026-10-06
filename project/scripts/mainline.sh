@@ -9,7 +9,8 @@ case "$stage" in
   v0) module=project.evaluation.v0 ;;
   v1-prepare) module=project.training.prepare ;;
   v1) module=project.training.train ;;
-  *) printf 'Usage: mainline.sh prepare|index|v0|v1-prepare|v1 [options]\n' >&2; exit 2 ;;
+  v1-eval) module=project.evaluation.v1 ;;
+  *) printf 'Usage: mainline.sh prepare|index|v0|v1-prepare|v1|v1-eval [options]\n' >&2; exit 2 ;;
 esac
 shift
 mkdir -p "$AGENTIC_RUNS_DIR/mainline_logs"
