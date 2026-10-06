@@ -96,6 +96,11 @@ def load_reward_manager(config, tokenizer, num_examine, **reward_kwargs):
     """
     from verl.workers.reward_manager import get_reward_manager_cls
 
+    # Optional project reward managers register themselves without changing this dispatcher.
+    from verl.utils.import_utils import import_external_libs
+
+    import_external_libs(config.reward_model.get("external_lib", None))
+
     # The list of pre-defined reward managers are defined in `verl/workers/reward_manager/`:
     # naive: NaiveRewardManager
     # prime: PrimeRewardManager

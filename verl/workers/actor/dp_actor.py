@@ -479,8 +479,21 @@ class DataParallelPPOActor(BasePPOActor):
                     )
                     append_to_dict(metrics, micro_batch_metrics)
 
+                # Opt-in, bounded local-shard probe for integration smoke runs.
+                # This measures actual stored parameter changes, not just a gradient norm.
+                probe = []
+                if self.config.get("update_probe", False):
+                    for parameter in self.actor_module.parameters():
+                        if parameter.requires_grad and parameter.numel():
+                            flat = parameter.detach().view(-1)
+                            sample = flat[::max(1, flat.numel() // 32)][:32]
+                            probe.append((sample, sample.clone()))
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
+                if probe:
+                    delta = torch.stack([(after.float() - before.float()).abs().max()
+                                         for after, before in probe]).max()
+                    mini_batch_metrics["actor/probe_parameter_delta_max"] = delta.item()
                 append_to_dict(metrics, mini_batch_metrics)
         self.actor_optimizer.zero_grad()
         return metrics
