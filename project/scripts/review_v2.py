@@ -34,7 +34,7 @@ def costs(rows):
             f'tokens={sum(r["total_tokens"] for r in rows)/len(rows):.0f}')
 
 
-def build_summary(before, after):
+def build_summary(before, after, before_name='V1', after_name='V2'):
     counts = paired_counts(before, after)
     old = {r['id']: r for r in before}
     failed = [r for r in after if r['status'] != 'answered']
@@ -49,16 +49,18 @@ def build_summary(before, after):
             found, total = row.get('support_chunks_found', 0), row.get('support_chunks_total', 0)
             coverage['unknown' if not total else 'all' if found == total else 'some' if found else 'none'] += 1
     paired = [r for r in after if r['status'] == old[r['id']]['status'] == 'answered']
-    lines = ['=== V2 OFFLINE REVIEW | no inference / no rescoring ===',
+    regressions = [r for r in after if old[r['id']]['em'] == 1 and r['em'] == 0]
+    lines = [f'=== {after_name} OFFLINE REVIEW | no inference / no rescoring ===',
              f'Tasks={len(after)} | fixed ID/question/gold alignment checked',
              f'Wrong->right={counts[0,1]} | right->wrong={counts[1,0]} | both right={counts[1,1]} | both wrong={counts[0,0]}',
              f'Statuses={dict(Counter(r["status"] for r in after))}',
+             f'Right->wrong by new status={dict(Counter(r["status"] for r in regressions))}',
              f'Mismatch types={dict(Counter(d[0] for _, d in details))}',
              f'Mismatch after searches={dict(Counter(r["searches"] for r in mismatches))}',
              f'Nonexact gold coverage={dict(coverage)} | repeated queries={repeated}/{len(after)}',
              'Failed costs: ' + costs(failed),
-             'Both-answered V1: ' + costs([old[r['id']] for r in paired]),
-             'Both-answered V2: ' + costs(paired),
+             f'Both-answered {before_name}: ' + costs([old[r['id']] for r in paired]),
+             f'Both-answered {after_name}: ' + costs(paired),
              'Subset costs are descriptive; coverage does not establish failure cause.']
     # One example per conflict type, bounded for screenshot exchange.
     seen = set()
@@ -76,11 +78,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--v1', default='dev_20261006T151952Z_111fcb')
     parser.add_argument('--v2', default='dev_20261007T024032Z_0bed4f')
+    parser.add_argument('--v3', help='Compare V2 to this V3 run instead of V1 to V2')
     args = parser.parse_args()
-    if any(not re.fullmatch(r'[A-Za-z0-9_-]+', value) for value in vars(args).values()):
+    if any(value is not None and not re.fullmatch(r'[A-Za-z0-9_-]+', value) for value in vars(args).values()):
         parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
     folders = [runs / 'v1_eval' / args.v1, runs / 'v2_eval' / args.v2]
+    if args.v3:
+        folders = [runs / 'v2_eval' / args.v2, runs / 'v3_eval' / args.v3]
     rows = []
     for folder in folders:
         report = json.loads((folder / 'report.json').read_text())
@@ -88,7 +93,7 @@ def main():
         if report['status'] != 'passed' or len(data) != report['metrics']['planned'] or len(data) != report['metrics']['completed']:
             raise ValueError('Incomplete evaluation')
         rows.append(data)
-    text = build_summary(*rows)
+    text = build_summary(*rows, before_name='V2' if args.v3 else 'V1', after_name='V3' if args.v3 else 'V2')
     (folders[1] / 'review_summary.txt').write_text(text, encoding='utf-8')
     print(text, end='')
 
