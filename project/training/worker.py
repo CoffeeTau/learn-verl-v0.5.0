@@ -20,7 +20,8 @@ def main():
     ray.init(runtime_env=runtime_env, namespace=config.agentic.retriever_name)
     retriever = RetrievalActor.options(name=config.agentic.retriever_name).remote(
         Path(config.agentic.corpus), Path(config.agentic.index), Path(config.agentic.retriever),
-        config.agentic.get("hard_plan"), config.agentic.get("retrieval_audit"))
+        config.agentic.get("hard_plan"), config.agentic.get("retrieval_audit"),
+        config.agentic.get("dev_hard_plan"))
     try:
         if ray.get(retriever.ready.remote()) != config.agentic.corpus_sha256:
             raise ValueError("Training/index corpus mismatch")

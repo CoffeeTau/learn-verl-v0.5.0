@@ -19,8 +19,9 @@ def reward_audit_json(records, groups):
 @register("agentic_f1")
 class SearchRewardManager:
     def __init__(self, tokenizer, num_examine=0, compute_score=None, reward_fn_key=None,
-                 audit_dir=None, max_searches=4, max_new_tokens=512, version="v1"):
+                 audit_dir=None, max_searches=4, max_new_tokens=512, version="v1", monitoring=False):
         self.version = version
+        self.monitoring = monitoring
         self.tokenizer = tokenizer
         self.audit_dir = Path(audit_dir) if audit_dir else None
         self.max_searches, self.max_new_tokens = max_searches, max_new_tokens
@@ -42,6 +43,12 @@ class SearchRewardManager:
             if any(len(part) >= self.max_new_tokens for part in segments):
                 score.update(score=0.0, em=0.0, status="generation_truncated")
             rewards[i, length - 1] = score["score"]
+            if self.monitoring:
+                from project.training.v4_monitor import token_cost
+                info = data.non_tensor_batch['extra_info'][i]
+                score.update(task_id=str(info['task_id']), eval_group=info.get('eval_group', 'train'),
+                             protocol_failure=float(score['status'] != 'answered'),
+                             total_tokens=token_cost(int(data.batch['attention_mask'][i, :prompt_len].sum()), mask))
             for key, value in score.items():
                 extras[key].append(value)
             task_id = data.non_tensor_batch["extra_info"][i]["task_id"]
@@ -54,4 +61,7 @@ class SearchRewardManager:
             # Per-process file: no concurrent append corruption between Ray workers.
             with (audit_dir / f"rewards_{os.getpid()}.jsonl").open("a") as handle:
                 handle.write(reward_audit_json(records, groups) + "\n")
+        if self.monitoring:
+            variation = sum(max(v) > min(v) for v in groups.values()) / max(len(groups), 1)
+            extras['varying_group_fraction'] = [float(variation)] * len(records)
         return {"reward_tensor": rewards, "reward_extra_info": dict(extras)} if return_dict else rewards

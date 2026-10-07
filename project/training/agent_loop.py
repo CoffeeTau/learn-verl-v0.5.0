@@ -91,4 +91,6 @@ class CorrectionAgentLoop(SearchAgentLoop):
         self.version = "v2"
         # Train and validation have different registry entries. This flag is never
         # inferred from temperature or the content of the question.
-        self.perturb = bool(perturb)
+        if perturb not in (False, True, "dev"):
+            raise ValueError("Unknown perturbation split")
+        self.perturb = perturb

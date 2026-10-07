@@ -1,9 +1,9 @@
-**3\. 用四张空闲卡继续原批次**
+同步本次代码，**包括 `verl/` 目录的修改**，然后运行：
 
 ```
+cd /home/h50061831/learn-verl-v0.5.0
+
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 bash project/scripts/run.sh \
-  bash project/scripts/mainline.sh acceptance \
-  --resume-latest --gpus 0,1,2,3
+bash project/scripts/mainline.sh v4 --mode smoke --gpus 8
 ```
-
-这里是**每张卡运行一个独立版本**，最多 V0–V3 同时运行。无需额外设置 `CUDA_VISIBLE_DEVICES`。

@@ -11,7 +11,7 @@ from project.common import code_info, model_inventory, resource_path, save_json,
 from project.training.summarize import summarize
 
 
-def build_config(out, data_dir, prepared, gpus, steps, smoke, version="v1", policy_path=None):
+def build_config(out, data_dir, prepared, gpus, steps, smoke, version="v1", policy_path=None, overrides=None):
     from hydra import compose, initialize_config_dir
     from omegaconf import OmegaConf
     repo = Path(__file__).resolve().parents[2]
@@ -79,10 +79,12 @@ def build_config(out, data_dir, prepared, gpus, steps, smoke, version="v1", poli
                        "actor_rollout_ref.rollout.val_kwargs.do_sample": False,
                        "agentic.hard_plan": str(out / "hard_plan.json"),
                        "agentic.retrieval_audit": str(out / "retrieval_audit.jsonl")})
+    values.update(overrides or {})
     # Known upstream keys must exist; only explicit project extension keys may be new.
     new_keys = {"trainer.tensorboard_dir", "reward_model.reward_kwargs.version", "agentic.hard_plan",
                 "agentic.retrieval_audit", "trainer.metrics_jsonl", "agentic", "reward_model.external_lib", "reward_model.reward_kwargs",
-                "actor_rollout_ref.actor.update_probe", "data.seed", "actor_rollout_ref.rollout.seed"}
+                "actor_rollout_ref.actor.update_probe", "data.seed", "actor_rollout_ref.rollout.seed",
+                "trainer.custom_trainer"}
     for key, value in values.items():
         if key not in new_keys and OmegaConf.select(config, key, default="__missing__") == "__missing__":
             raise KeyError(f"Unexpected veRL config field: {key}")

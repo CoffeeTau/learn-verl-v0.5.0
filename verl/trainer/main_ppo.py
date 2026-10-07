@@ -221,7 +221,14 @@ class TaskRunner:
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the PPO trainer.
-        trainer = RayPPOTrainer(
+        trainer_cls = RayPPOTrainer
+        if config.trainer.get("custom_trainer"):
+            trainer_cls = load_extern_type(
+                config.trainer.custom_trainer.path, config.trainer.custom_trainer.name
+            )
+            if not issubclass(trainer_cls, RayPPOTrainer):
+                raise TypeError("custom_trainer must extend RayPPOTrainer")
+        trainer = trainer_cls(
             config=config,
             tokenizer=tokenizer,
             processor=processor,

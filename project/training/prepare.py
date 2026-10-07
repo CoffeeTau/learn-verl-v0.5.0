@@ -6,9 +6,9 @@ from project.common import config_from, load_jsonl, resource_path, save_json, sh
 from project.training.protocol import continuation_ids
 
 
-def prepare(version="v1"):
+def prepare(version="v1", output_dir=None):
     prompt = SYSTEM_PROMPT
-    if version == "v2":
+    if version in ("v2", "v4"):
         from project.agent.correction import SYSTEM_PROMPT as prompt
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -16,8 +16,8 @@ def prepare(version="v1"):
     cfg = config_from()
     source = resource_path("AGENTIC_PROCESSED_DATA_DIR")
     manifest = json.loads((source / "manifest.json").read_text())
-    out = source / ("verl_v2" if version == "v2" else "verl")
-    out.mkdir(exist_ok=True)
+    out = Path(output_dir) if output_dir else source / (f"verl_{version}" if version in ("v2", "v4") else "verl")
+    out.mkdir(parents=True, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(str(resource_path("AGENTIC_MODEL_DIR")), local_files_only=True)
     # Verify the hard-coded continuation against this actual local Qwen3 template.
     base = [{"role": "system", "content": prompt.format(max_searches=cfg["max_searches"])},
@@ -46,7 +46,7 @@ def prepare(version="v1"):
             if len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
                                                  enable_thinking=False)) > 512:
                 raise ValueError(f"Prompt exceeds 512 tokens: {row['id']}; do not silently truncate")
-            records.append({"data_source": "agentic_2wiki", "agent_name": ("agentic_correction_train" if split == "train" else "agentic_correction_eval") if version == "v2" else "agentic_search", "prompt": messages,
+            records.append({"data_source": "agentic_2wiki", "agent_name": ("agentic_correction_train" if split == "train" else "agentic_correction_eval") if version in ("v2", "v4") else "agentic_search", "prompt": messages,
                             "ability": "multi_hop_search", "reward_model": {"style": "rule", "ground_truth": labels[row['id']]['answer']},
                             "extra_info": {"split": split, "index": i, "task_id": row["id"]}})
         path = out / f"{split}.parquet"

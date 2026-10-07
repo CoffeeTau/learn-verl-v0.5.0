@@ -1394,6 +1394,12 @@ class RayPPOTrainer:
                 )
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                if self.config.get("agentic", {}).get("v4_monitor", False):
+                    for source, target in {"score": "answer_f1", "em": "answer_em",
+                                           "protocol_failure": "protocol_failure_rate",
+                                           "searches": "searches", "total_tokens": "total_tokens",
+                                           "varying_group_fraction": "varying_group_fraction"}.items():
+                        metrics["train/" + target] = float(np.mean(batch.non_tensor_batch[source]))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
