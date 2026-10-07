@@ -25,3 +25,9 @@ The E5 implementation also agrees with the [official model card](https://hugging
 ## V2 correction
 
 `project/agent/correction.py` is project-specific code inspired by the JUDGE/re-plan mechanism described in `project_resource/ReSeek/README.md`. It does not copy `reseek_regex.py` or its answer-overlap process reward. Hard-episode construction and terminal-F1 scoring remain project-specific; this is not a full ReSeek reproduction.
+
+## V3 sequential retrieval and state
+
+`project/retrieval/v3.py` reuses the project's existing E5 inference adapter for mining, model/tokenizer loading and index construction. The grouped contrastive training loop is project-specific, informed by the sequential adaptation approach and encoder/contrastive-loss path in `project_resource/Agentic-R/tevatron/src/tevatron/retriever/modeling/encoder.py`; it does not copy the Tevatron model, teacher utility labels, RankNet or distributed trainer. It uses annotated relation/support-sentence alignment and filtered negatives, not Agentic-R's utility supervision.
+
+`project/agent/state.py` is project-specific source-preserving state management, inspired by the evidence/state reuse objective in `project_resource/InfoAgent/retrac/`. It does not import the LangGraph/LLM client implementation and does not implement RE-TRAC's full cross-trajectory compression. No API or learned summarizer is currently used. The distinction is documented in V3.md.

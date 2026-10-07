@@ -34,7 +34,7 @@ def parse_action(text):
     raise ValueError("invalid_action_format")
 
 
-def run_episode(question, generate, search, config, system_prompt=SYSTEM_PROMPT, action_parser=None):
+def run_episode(question, generate, search, config, system_prompt=SYSTEM_PROMPT, action_parser=None, history_builder=None):
     """Only a question and public search results enter model messages.
 
     generate(messages) returns text, finish_reason, prompt_tokens, output_tokens,
@@ -84,6 +84,8 @@ def run_episode(question, generate, search, config, system_prompt=SYSTEM_PROMPT,
             remaining = config["max_searches"] - result["searches"]
             messages.extend([{"role": "assistant", "content": output["text"]},
                              {"role": "user", "content": f"<information>\n{observation}\n</information>\nSearches remaining: {remaining}."}])
+            if history_builder:
+                messages = history_builder(question, result['steps'], remaining, messages[0]['content'])
     finally:
         result["seconds"] = time.monotonic() - started
         result["total_tokens"] = result["prompt_tokens"] + result["output_tokens"]

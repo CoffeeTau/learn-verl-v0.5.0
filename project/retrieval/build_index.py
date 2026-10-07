@@ -2,6 +2,7 @@
 import argparse
 import json
 import traceback
+from pathlib import Path
 
 from project.common import (config_from, load_jsonl, model_inventory, resource_path,
                             save_json, sha256, show_summary, signature)
@@ -12,8 +13,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--model-path", type=Path)
+    parser.add_argument("--index-path", type=Path)
+    parser.add_argument("--report-path", type=Path)
     args = parser.parse_args()
-    out = resource_path("AGENTIC_RUNS_DIR") / "index_v1"
+    if bool(args.model_path) != bool(args.index_path) or bool(args.model_path) != bool(args.report_path):
+        parser.error('Custom index requires model, index and report paths together')
+    out = args.report_path or resource_path("AGENTIC_RUNS_DIR") / "index_v1"
     try:
         import numpy as np
         config = config_from(args.config)
@@ -23,11 +29,11 @@ def main():
         digest = sha256(corpus_path)
         if digest != corpus_manifest["corpus_sha256"]:
             raise ValueError("Corpus differs from frozen manifest")
-        path = resource_path("AGENTIC_INDEX_DIR")
+        path = args.index_path or resource_path("AGENTIC_INDEX_DIR")
         path.mkdir(parents=True, exist_ok=True)
         if (path / "manifest.json").exists():
             raise ValueError("Index already exists; reuse it rather than overwriting the V0 index")
-        model_path = resource_path("AGENTIC_RETRIEVER_DIR")
+        model_path = args.model_path or resource_path("AGENTIC_RETRIEVER_DIR")
         inventory = model_inventory(model_path)
         rows = load_jsonl(corpus_path)
         encoder = E5Encoder(str(model_path), device=args.device)
@@ -55,7 +61,8 @@ def main():
         save_json(path / "manifest.json", manifest)
         save_json(out / "report.json", manifest)
         show_summary(out, f"=== INDEX | PASSED ===\nE5 device: {args.device} | shape={shape}\n"
-                         f"Corpus SHA256: {digest[:16]}\nMethod: normalized exact inner product\nNext: V0 on project dev (200 tasks).")
+                         f"Corpus SHA256: {digest[:16]}\nMethod: normalized exact inner product\n"
+                         + ('Next: V3 state integration and development evaluation.' if args.model_path else 'Next: V0 on project dev (200 tasks).'))
         return 0
     except Exception as exc:
         save_json(out / "report.json", {"status": "failed", "traceback": traceback.format_exc()})

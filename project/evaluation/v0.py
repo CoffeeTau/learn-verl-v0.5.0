@@ -43,9 +43,10 @@ def summary_text(report, results, relative_run):
                      f"F1 {m['f1_percent'] - baseline['f1_percent']:+.2f} pp")
     if report.get("comparison_metrics") and report["status"] == "passed":
         reference = report["comparison_metrics"]
-        lines.append(f"Vs V1: EM {m['em_percent'] - reference['em_percent']:+.2f} pp | "
+        lines.append(f"Vs {report.get('comparison_variant', 'V1')}: EM {m['em_percent'] - reference['em_percent']:+.2f} pp | "
                      f"F1 {m['f1_percent'] - reference['f1_percent']:+.2f} pp")
-        lines.append("V2 adds judge protocol; clean retrieval, same dev and resource budgets.")
+        lines.append("V3: adapted E5 + source-preserving state; frozen V2 policy." if report.get('variant') == 'V3'
+                     else "V2 adds judge protocol; clean retrieval, same dev and resource budgets.")
     # Two representative cases, no long documents or absolute machine paths.
     samples = []
     for predicate in (lambda row: row["em"] == 0, lambda row: row["em"] == 1):
@@ -82,14 +83,17 @@ def validate_baseline(manifest, report, dataset, planned):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
-    parser.add_argument("--protocol", choices=("v1", "v2"), default="v1")
+    parser.add_argument("--protocol", choices=("v1", "v2", "v3"), default="v1")
+    parser.add_argument('--retriever-run', type=Path, help='Completed V3 E5 training run with index')
     parser.add_argument("--compare-run", type=Path, help="Optional completed V1 reference for V2")
     parser.add_argument("--limit", type=int, default=None, help="Optional partial dev run; omitted = all 200")
     parser.add_argument("--model-path", type=Path, help="Exported V1 policy; tokenizer stays identical to V0")
     parser.add_argument("--baseline-run", type=Path, help="Saved V0 run directory for matched V1 evaluation")
     args = parser.parse_args()
-    if args.protocol == "v2" and not args.model_path:
+    if args.protocol in ("v2", "v3") and not args.model_path:
         parser.error("V2 evaluation requires an exported model")
+    if (args.protocol == 'v3') != bool(args.retriever_run) or (args.protocol == 'v3' and not args.compare_run):
+        parser.error('V3 requires retriever-run and V2 compare-run; other protocols cannot change retriever')
     if bool(args.model_path) != bool(args.baseline_run):
         parser.error("--model-path and --baseline-run must be supplied together")
     if args.baseline_run and (args.limit is not None or args.config):
@@ -103,11 +107,14 @@ def main():
         if baseline_report["status"] != "passed" or baseline_manifest.get("limit") is not None:
             raise ValueError("Baseline must be a completed full dev evaluation")
         config = baseline_manifest["config"]
-    variant = "V2" if args.protocol == "v2" else ("V1" if args.model_path else "V0")
+    variant = args.protocol.upper() if args.protocol in ('v2', 'v3') else ("V1" if args.model_path else "V0")
     prompt_text, action_parser = SYSTEM_PROMPT, None
-    if args.protocol == "v2":
+    history_builder = None
+    if args.protocol in ('v2', 'v3'):
         from project.agent.correction import SYSTEM_PROMPT as prompt_text, parse_action as action_parser
-    group = "v2_eval" if args.protocol == "v2" else ("v1_eval" if args.model_path else "v0")
+    if args.protocol == 'v3':
+        from project.agent.state import SYSTEM_PROMPT as prompt_text, state_messages as history_builder
+    group = args.protocol + '_eval' if args.protocol in ('v2', 'v3') else ("v1_eval" if args.model_path else "v0")
     runs = resource_path("AGENTIC_RUNS_DIR") / group
     run_id = "dev_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + uuid4().hex[:6]
     out = runs / run_id
@@ -139,7 +146,17 @@ def main():
             comparison_manifest = json.loads((args.compare_run / "manifest.json").read_text())
             if comparison["status"] != "passed" or comparison_manifest.get("limit") is not None:
                 raise ValueError("V1 comparison must be complete")
-            validate_baseline(comparison_manifest, comparison, dataset, planned)
+            if args.protocol == 'v3':
+                from project.agent.correction import SYSTEM_PROMPT as v2_prompt
+                if comparison_manifest.get('protocol') != 'v2' or comparison_manifest['system_prompt'] != v2_prompt:
+                    raise ValueError('V3 comparison must use the saved V2 protocol')
+                # All other frozen-data checks remain identical; only the declared prompt differs.
+                validate_baseline({**comparison_manifest, 'system_prompt': SYSTEM_PROMPT}, comparison, dataset, planned)
+                if comparison_manifest['policy_model'] != model_inventory(args.model_path):
+                    raise ValueError('V3 must freeze the exact evaluated V2 policy')
+                report['comparison_variant'] = 'V2'
+            else:
+                validate_baseline(comparison_manifest, comparison, dataset, planned)
             if comparison_manifest["config"] != config or comparison_manifest["index_manifest"] != baseline_manifest["index_manifest"]:
                 raise ValueError("V1 comparison settings differ")
             report.update(comparison_metrics=comparison["metrics"], comparison_run=str(args.compare_run))
@@ -149,11 +166,21 @@ def main():
         from project.retrieval.local import LocalRetriever
         from transformers import AutoTokenizer
         from vllm import LLM, SamplingParams
-        retriever = LocalRetriever(resource_path("AGENTIC_CORPUS_DIR"), resource_path("AGENTIC_INDEX_DIR"),
-                                   resource_path("AGENTIC_RETRIEVER_DIR"))
+        index_path, retriever_path = resource_path('AGENTIC_INDEX_DIR'), resource_path('AGENTIC_RETRIEVER_DIR')
+        if args.retriever_run:
+            adapted = json.loads((args.retriever_run / 'report.json').read_text())
+            provenance = json.loads((args.retriever_run / 'manifest.json').read_text())
+            retriever_path, index_path = args.retriever_run / 'model', args.retriever_run / 'index'
+            if adapted['status'] != 'passed' or adapted['model_inventory'] != model_inventory(retriever_path):
+                raise ValueError('V3 E5 training/export changed')
+            if provenance['pairs_manifest']['source_manifest_sha256'] != sha256(data_dir / 'manifest.json'):
+                raise ValueError('V3 E5 trained on a different data version')
+            if provenance['pairs_manifest']['base_index'] != baseline_manifest['index_manifest']:
+                raise ValueError('V3 E5 mining did not use the frozen baseline index')
+        retriever = LocalRetriever(resource_path("AGENTIC_CORPUS_DIR"), index_path, retriever_path)
         if retriever.manifest["corpus_sha256"] != dataset["corpus_sha256"]:
             raise ValueError("Dataset and retrieval corpus versions differ")
-        if baseline_manifest and retriever.manifest != baseline_manifest["index_manifest"]:
+        if baseline_manifest and args.protocol != 'v3' and retriever.manifest != baseline_manifest["index_manifest"]:
             raise ValueError("Retrieval index differs from V0")
         model_path = args.model_path or resource_path("AGENTIC_MODEL_DIR")
         tokenizer_path = resource_path("AGENTIC_MODEL_DIR")
@@ -164,7 +191,8 @@ def main():
                     "dataset_manifest": dataset, "index_manifest": retriever.manifest,
                     "policy_model": model_inventory(model_path), "system_prompt": prompt_text, "protocol": args.protocol,
                     "enable_thinking": False, "scoring": "canonical_answer_em_f1_no_aliases",
-                    "tokenizer_path": str(tokenizer_path), "history_mode": "v0_rerender",
+                    "tokenizer_path": str(tokenizer_path), "history_mode": 'source_preserving_state' if history_builder else "v0_rerender",
+                    "retriever_training_run": str(args.retriever_run) if args.retriever_run else None,
                     "baseline_run": str(args.baseline_run) if args.baseline_run else None}
         save_json(out / "manifest.json", manifest)
         save_json(out / "resolved_config.json", {**config, "model_path": str(model_path), "dataset_path": str(data_dir)})
@@ -190,7 +218,7 @@ def main():
             for number, row in enumerate(questions, 1):
                 # Only row['question'] crosses into the agent. Labels are read for scoring afterwards.
                 result = run_episode(row["question"], generate, retriever.search, config,
-                                     system_prompt=prompt_text, action_parser=action_parser)
+                                     system_prompt=prompt_text, action_parser=action_parser, history_builder=history_builder)
                 gold = labels[row["id"]]
                 score = score_answer(result["answer"], gold["answer"]) if result["status"] == "answered" else {"em": 0.0, "f1": 0.0}
                 retrieved = {hit["id"] for step in result["steps"] for hit in step.get("hits", [])}
