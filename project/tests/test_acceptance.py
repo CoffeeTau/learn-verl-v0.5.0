@@ -1,11 +1,23 @@
 """Acceptance boundaries: fixed hard subset, first-call-only perturbation, strict scoring."""
 import unittest
 from types import SimpleNamespace
-from project.evaluation.acceptance import episode_search, aggregate
+from project.evaluation.acceptance import episode_search, aggregate, parse_gpus, compatible_code, LEGACY_SERIAL_SHA
 from project.training.hard_episodes import build_plan
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_parallel_devices_and_narrow_migration(self):
+        self.assertEqual(parse_gpus('0,1,2,3'), ['0', '1', '2', '3'])
+        for value in ('', '0,0', '0,', '-1', '0;1'):
+            with self.assertRaises(ValueError):
+                parse_gpus(value)
+        key = 'project/evaluation/acceptance.py'
+        old = {key: LEGACY_SERIAL_SHA, 'scoring': 'unchanged'}
+        new = {key: 'parallel', 'scoring': 'unchanged'}
+        self.assertTrue(compatible_code(old, new))
+        self.assertFalse(compatible_code(old, {**new, 'scoring': 'changed'}))
+        self.assertFalse(compatible_code({**old, key: 'unknown'}, new))
+
     def test_test_plan_is_fixed_and_balanced(self):
         tasks = [dict(id=str(i), question=f'question {i}') for i in range(300)]
         labels = {r['id']: {'supporting_facts': [{'passage_id': 'a'}, {'passage_id': 'b'}]} for r in tasks}

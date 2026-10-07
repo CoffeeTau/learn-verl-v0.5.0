@@ -4,6 +4,9 @@ from collections import Counter
 from datetime import datetime, timezone
 import json
 import os
+import signal
+import time
+import fcntl
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +42,42 @@ def runtime_code():
              'project/training/hard_episodes.py', 'project/common.py',
              'project/scripts/summarize_smoke.py']
     return {name: sha256(root / name) for name in names}
+
+
+LEGACY_SERIAL_SHA = '031a556711f84234241a44521bbc0259269c917de4adc5ae6738af05ea511eb2'
+
+
+def compatible_code(saved, current):
+    """Allow only the reviewed serial-to-parallel scheduler migration."""
+    name = 'project/evaluation/acceptance.py'
+    if saved == current:
+        return True
+    return (saved.get(name) == LEGACY_SERIAL_SHA and saved.keys() == current.keys()
+            and all(saved[k] == current[k] for k in saved if k != name))
+
+
+def parse_gpus(value):
+    devices = [part.strip() for part in value.split(',')]
+    if not devices or any(not d.isdigit() for d in devices) or len(set(devices)) != len(devices):
+        raise ValueError('--gpus requires distinct physical GPU indices, e.g. 0,1,2,3')
+    return devices
+
+
+def stop_process_group(process):
+    # Workers start their own session; include vLLM subprocesses in cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
 
 
 def test_data():
@@ -122,7 +161,7 @@ def verify(spec):
             or spec['candidate_selected_on_dev'] != 'V2'
             or spec['hard_ids'] != sorted(p['task_id'] for p in spec['hard_plan'].values())):
         raise ValueError('Frozen acceptance structure changed')
-    if dataset != spec['dataset'] or runtime_code() != spec['code']:
+    if dataset != spec['dataset'] or not compatible_code(spec['code'], runtime_code()):
         raise ValueError('Frozen data/runtime code changed; do not silently resume different code')
     if build_plan(tasks, labels, corpus, seed=42) != spec['hard_plan']:
         raise ValueError('Frozen hard plan differs')
@@ -258,6 +297,8 @@ def summarize(out, spec):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--resume', type=Path, help='Existing acceptance run directory; no new selection')
+    parser.add_argument('--resume-latest', action='store_true')
+    parser.add_argument('--gpus', help='Physical GPU IDs; one independent version worker per GPU')
     parser.add_argument('--worker', choices=tuple(SOURCES), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker:
@@ -265,6 +306,10 @@ def main():
             parser.error('Worker requires frozen run directory')
         return worker(args.resume, args.worker)
     root = resource_path('AGENTIC_RUNS_DIR') / 'acceptance'
+    if args.resume_latest:
+        if args.resume:
+            parser.error('Use either --resume or --resume-latest')
+        args.resume = root / read(root / 'latest_run.json')['run_id']
     if args.resume:
         out = args.resume.resolve()
         if out.parent != root.resolve():
@@ -276,42 +321,84 @@ def main():
         out = root / ('test_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid4().hex[:6])
         spec = freeze(out)
         save_json(root / 'latest_run.json', {'run_id': out.name})
-    verify(spec)
-    print(f'Frozen acceptance: runs/acceptance/{out.name}', flush=True)
-    print(f'Natural=300 | hard={spec["hard_tasks"]} | modes={spec["hard_modes"]} | GPUs=1', flush=True)
-    for version in SOURCES:
-        if completed_report(out, version, spec):
-            print(version + ': reuse completed result', flush=True)
-            continue
-        folder = out / version
-        if folder.exists():
-            folder.rename(out / (version + '_interrupted_' + uuid4().hex[:6]))
-        folder.mkdir()
-        log_path = folder / 'run.log'
-        print(f'{version}: running; log=runs/acceptance/{out.name}/{version}/run.log', flush=True)
-        with log_path.open('w') as log:
-            process = subprocess.Popen([sys.executable, '-u', '-m', 'project.evaluation.acceptance',
-                                        '--resume', str(out), '--worker', version], stdout=log, stderr=subprocess.STDOUT)
-            while True:
-                try:
-                    code = process.wait(timeout=60)
+    # Prevent two new schedulers from writing the same run concurrently.
+    with (out / '.scheduler.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another acceptance scheduler is running for this directory')
+        verify(spec)
+        devices = parse_gpus(args.gpus or os.environ.get('CUDA_VISIBLE_DEVICES', '0'))
+        session_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid4().hex[:6]
+        session_path = out / ('execution_' + session_id + '.json')
+        session = {'status': 'running', 'gpus': devices, 'code': runtime_code(),
+                   'frozen_sha256': sha256(out / 'frozen.json'), 'assignments': {},
+                   'migration': 'serial_to_parallel' if spec['code'] != runtime_code() else None,
+                   'timing_note': 'Concurrent versions share CPU and memory; latency is not serial-comparable.'}
+        save_json(session_path, session)
+        print(f'Frozen acceptance: runs/acceptance/{out.name}', flush=True)
+        print(f'Natural=300 | hard={spec["hard_tasks"]} | GPUs={devices} | one version per GPU', flush=True)
+        pending = []
+        for version in SOURCES:
+            if completed_report(out, version, spec):
+                print(version + ': reuse completed result', flush=True)
+            else:
+                pending.append(version)
+        active = {}
+        available = list(devices)
+        failed = False
+        last_notice = time.monotonic()
+        try:
+            while pending or active:
+                while pending and available and not failed:
+                    version, device = pending.pop(0), available.pop(0)
+                    folder = out / version
+                    if folder.exists():
+                        folder.rename(out / (version + '_interrupted_' + uuid4().hex[:6]))
+                    folder.mkdir()
+                    env = os.environ.copy()
+                    env['CUDA_VISIBLE_DEVICES'] = device
+                    with (folder / 'run.log').open('w') as log:
+                        process = subprocess.Popen([sys.executable, '-u', '-m', 'project.evaluation.acceptance',
+                                                   '--resume', str(out), '--worker', version],
+                                                   stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+                    active[version] = (process, device)
+                    session['assignments'][version] = {'gpu': device, 'pid': process.pid}
+                    save_json(session_path, session)
+                    print(f'{version}: GPU {device}; log=runs/acceptance/{out.name}/{version}/run.log', flush=True)
+                for version, (process, device) in list(active.items()):
+                    code = process.poll()
+                    if code is None:
+                        continue
+                    del active[version]
+                    available.append(device)
+                    print(f'{version}: exited {code}', flush=True)
+                    if code:
+                        failed = True
+                        report_path = out / version / 'report.json'
+                        print(read(report_path).get('error', 'Worker failed') if report_path.exists()
+                              else 'Worker exited before reporting', flush=True)
+                    summarize(out, spec)
+                if failed:
                     break
-                except subprocess.TimeoutExpired:
-                    print(f'{version}: running; see run.log', flush=True)
-                except KeyboardInterrupt:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                    raise
-        summarize(out, spec)
-        if code:
-            report_path = folder / 'report.json'
-            print(read(report_path).get('error', 'Worker failed') if report_path.exists() else 'Worker exited before reporting', flush=True)
-            return 1
-    return 0 if summarize(out, spec) else 1
+                if time.monotonic() - last_notice >= 60:
+                    print('Running: ' + ', '.join(active) + '; see per-version run.log', flush=True)
+                    last_notice = time.monotonic()
+                if active:
+                    time.sleep(1)
+            session['status'] = 'failed' if failed else 'complete'
+        except KeyboardInterrupt:
+            session['status'] = 'interrupted'
+            print('Stopping worker process groups; completed versions remain reusable.', flush=True)
+            return 130
+        except Exception:
+            session['status'] = 'failed'
+            raise
+        finally:
+            for process, _ in active.values():
+                stop_process_group(process)
+            save_json(session_path, session)
+        return 0 if not failed and summarize(out, spec) else 1
 
 
 if __name__ == '__main__':

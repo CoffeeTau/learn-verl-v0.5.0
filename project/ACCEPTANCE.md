@@ -67,3 +67,24 @@ CUDA_VISIBLE_DEVICES=0 bash project/scripts/run.sh \
 本地执行：`python3 -m unittest discover -s project/tests -q`，39 项通过。新增检查覆盖固定困难子集、首次检索后恢复、私有扰动不进入检索请求、失败题保留分母。CLI、Python 编译、shell 语法检查通过。本机没有实际执行 GPU/vLLM 的冻结测试集验收。
 
 拿到结果后更新阶段验收表和实验日志，保留全部失败。之后整理文本运行/轨迹回放交付；不依据 test 再调提示词、增加训练或筛选模型。
+
+## 切换为多卡并行验收
+
+停止旧任务后再同步新代码，不能让旧单卡和新多卡任务同时写同一目录。
+
+1. 原验收终端按一次 Ctrl+C，等命令返回提示符；这是终止当前进程后续跑，不是保留显存内的暂停。
+2. 执行 `nvidia-smi`，确认原评测 GPU 进程已退出。若仍有残留，先按 PID 核实是否属于本次任务，不要批量杀其他任务。
+3. 同步代码后，用已有验收清单继续：
+
+```bash
+bash project/scripts/run.sh bash project/scripts/mainline.sh acceptance \
+  --resume-latest --gpus 0,1,2,3
+```
+
+`--gpus` 是物理 GPU 编号，调度器给每个 worker 单独设置 CUDA_VISIBLE_DEVICES；最多四版本同时运行，每个模型仍 TP=1、逐题单并发。无需额外设置外层 CUDA_VISIBLE_DEVICES。必须选当前可用的卡。若只剩一个版本未完成，本次不会将其题目再分卡，只有一张卡工作是预期行为。
+
+已完成版本经过原有结果校验后跳过；未完成版本的原目录保留为 interrupted，再从该版本的自然组第一题开始。冻结权重、数据、规则和题目不会修改。程序只允许原单卡调度器的特定源码 hash 迁移到本版；其他来源代码变化仍拒绝恢复。`frozen.json` 不改写，新增 `execution_<时间>_<ID>.json` 保存当前源码、GPU 分配和迁移记录。
+
+后续 Ctrl+C 会终止新 worker 的整个进程组（包括 vLLM 子进程）；目录锁阻止新版调度器重复启动同一批次。旧版没有该锁，因此切换前必须先停止旧任务。
+
+多卡共享 CPU/内存，单题耗时可能受资源争用影响。混合单卡已完成版本和多卡剩余版本时，质量/预算口径不变，但不能用混合运行的秒数宣称模型效率提升。最终汇总需结合 execution 文件标注执行方式。
