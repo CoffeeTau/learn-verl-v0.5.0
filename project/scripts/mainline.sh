@@ -13,6 +13,7 @@ case "$stage" in
   v2-eval) module=project.evaluation.v2 ;;
   v3-retriever) module=project.retrieval.v3 ;;
   v3-eval) module=project.evaluation.v3 ;;
+  acceptance) module=project.evaluation.acceptance ;;
   v1-eval) module=project.evaluation.v1 ;;
   *) printf 'Usage: mainline.sh prepare|index|v0|v1-prepare|v1|v1-eval|v2|v2-eval|v3-retriever|v3-eval [options]\n' >&2; exit 2 ;;
 esac

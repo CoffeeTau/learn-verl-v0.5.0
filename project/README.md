@@ -1,4 +1,11 @@
+冻结测试集操作入口：[ACCEPTANCE.md](ACCEPTANCE.md)。单卡自动顺序验收 V0–V3，尚未取得测试成绩。
+
 # Agentic Search 主干实施计划
+
+当前阶段：开发集主干实验完成，V2 为当前最佳候选；正在整理验收，冻结测试集尚未运行。
+
+- [主干结果与阶段验收](reports/mainline_acceptance.md)：四版本结果、证据路径、已完成与待办边界。
+- [代表案例分析](reports/representative_cases.md)：祖父题、乐队题及其他成功/失败案例。
 
 复盘入口：[实验日志：主干结果、bad case 与关键决策](EXPERIMENT_LOG.md)。后续关键实验统一维护此文档，避免分散记录。
 
