@@ -20,6 +20,16 @@ def normalized(text):
     return ' '.join(re.sub(r'[^\w]+', ' ', unicodedata.normalize('NFKC', text).casefold()).split())
 
 
+def parameter_probe_indices(numel, limit=32):
+    """Exact integer positions: float32 endpoints can round up past large tensors."""
+    if numel < 0 or limit < 1:
+        raise ValueError('Invalid parameter probe size')
+    count = min(numel, limit)
+    if count <= 1:
+        return [0] if count else []
+    return [i * (numel - 1) // (count - 1) for i in range(count)]
+
+
 def contains(text, phrase):
     return bool(phrase) and f' {phrase} ' in f' {normalized(text)} '
 
@@ -171,12 +181,6 @@ def train(device):
     optimizer = torch.optim.AdamW(encoder.model.parameters(), lr=1e-5, weight_decay=0)
     tb_dir = resource_path('AGENTIC_ROOT') / 'tensorboard' / ('v3_retriever_' + run_id)
     writer = SummaryWriter(str(tb_dir))
-    probes = []
-    for parameter in encoder.model.parameters():
-        if parameter.requires_grad and parameter.numel():
-            indices = torch.linspace(0, parameter.numel() - 1, min(32, parameter.numel()),
-                                     device=device).long()
-            probes.append((parameter, indices, parameter.detach().flatten()[indices].clone()))
     manifest = {'status': 'running', 'pairs_manifest': source, 'epochs': 1, 'batch_size': 8,
                 'lr': 1e-5, 'temperature': 0.02, 'in_batch_negatives': False, 'device': device,
                 'loss': 'per_query_positive_vs_three_filtered_negatives_cross_entropy', 'code': code_info()}
@@ -191,6 +195,12 @@ def train(device):
         return torch.nn.functional.normalize(pooled, dim=-1)
 
     try:
+        probes = []
+        for parameter in encoder.model.parameters():
+            if parameter.requires_grad and parameter.numel():
+                indices = torch.tensor(parameter_probe_indices(parameter.numel()),
+                                       dtype=torch.long, device=parameter.device)
+                probes.append((parameter, indices, parameter.detach().flatten()[indices].clone()))
         losses = []
         with (out / 'metrics.jsonl').open('w') as handle:
             for step, start in enumerate(range(0, len(pairs), 8), 1):

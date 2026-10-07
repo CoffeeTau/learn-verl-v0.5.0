@@ -5,10 +5,24 @@ import unittest
 from project.agent.correction import parse_action
 from project.agent.search import run_episode
 from project.agent.state import SYSTEM_PROMPT, state_messages
-from project.retrieval.v3 import allowed_negative, relation_candidates
+from project.retrieval.v3 import allowed_negative, relation_candidates, parameter_probe_indices
 
 
 class V3Tests(unittest.TestCase):
+    def test_large_parameter_probe_never_rounds_past_endpoint(self):
+        import struct
+        numel = 30522 * 768
+        rounded = int(struct.unpack('f', struct.pack('f', numel - 1))[0])
+        self.assertEqual(rounded, numel)  # Old float32 linspace endpoint is out of bounds.
+        for size in (0, 1, 2, 31, 32, 33, 768, numel, 2**32 + 3):
+            positions = parameter_probe_indices(size)
+            self.assertEqual(len(positions), min(size, 32))
+            self.assertEqual(positions, sorted(set(positions)))
+            self.assertTrue(all(0 <= i < size for i in positions))
+            if size:
+                self.assertEqual(positions[0], 0)
+                self.assertEqual(positions[-1], size - 1)
+
     def test_positive_requires_labeled_sentence_and_exact_subject_title(self):
         corpus = [dict(id='p', paragraph_id='a', title='Colin, First Earl',
                        sentences=['His father was Archibald, Master.', 'Other text.'], sentence_ids=[0, 1])]
