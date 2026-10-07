@@ -49,11 +49,18 @@ class V3Tests(unittest.TestCase):
     def test_state_retains_distinct_entities_sources_and_unverified_claims(self):
         hits = [dict(id='p', title='Archibald, Master', text='Original <sentence>.'),
                 dict(id='q', title='Archibald, Fourth Earl', text='Different entity.')]
-        steps = [dict(query='father', hits=hits),
-                 dict(query='grandfather', hits=[hits[0]], judge='insufficient', reason='Need father of father')]
+        steps = [dict(query='father', hits=hits, output='<search>father</search>'),
+                 dict(query='grandfather', hits=[hits[0]], judge='insufficient', reason='Need father of father',
+                      output='<judge>insufficient: Need father of father</judge><search>grandfather</search>')]
         before = deepcopy(steps)
-        payload = state_messages('question', steps, 2, 'system')[-1]['content']
-        self.assertEqual(payload.count('[p]'), 1)
+        messages = state_messages('question', steps, 2, 'system')
+        self.assertEqual([m['role'] for m in messages], ['system', 'user', 'assistant', 'user', 'assistant', 'user'])
+        self.assertEqual(messages[2]['content'], steps[0]['output'])
+        self.assertEqual(messages[4]['content'], steps[1]['output'])
+        self.assertIn('Searches remaining: 3.', messages[3]['content'])
+        self.assertIn('Searches remaining: 2.', messages[5]['content'])
+        payload = '\n'.join(m['content'] for m in messages)
+        self.assertEqual(payload.count('[p]'), 2)  # Keep original observations, including repeated hits.
         self.assertIn('[q]', payload)
         self.assertIn('Original &lt;sentence&gt;.', payload)
         self.assertIn('unverified', payload)

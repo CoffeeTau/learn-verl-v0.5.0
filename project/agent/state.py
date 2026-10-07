@@ -1,15 +1,15 @@
 """Source-preserving task state, not a learned or API-generated factual summary.
 
-Remove repeated documents and old conversational wrappers, never synthesize
-confirmed relations from the policy's own claims. All search results remain
-available by their original IDs. No extra generation/search calls are added.
+Preserve the trained assistant/action -> user/observation conversation contract.
+Append a compact ledger without replacing any sampled actions or evidence.
+No extra generation/search calls are added.
 """
 import html
 import json
 from project.agent.correction import SYSTEM_PROMPT as V2_PROMPT
 
 SYSTEM_PROMPT = V2_PROMPT + """
-After searching, you receive structured task_state and original evidence instead of the full chat history.
+Tool results may include a supplementary task_state. Continue the existing search conversation.
 Previous judgments are unverified model claims, NOT confirmed facts. Check them against original evidence.
 Keep full entity names, titles, and relation direction: a matching name alone does not establish identity.
 For each required relation, check which passage actually states it. A retrieved title is not proof.
@@ -24,9 +24,19 @@ def state_messages(question, steps, remaining, system_prompt):
     evidence = {}
     queries = []
     judgments = []
+    messages = [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': question}]
+    search_steps = [step for step in steps if 'query' in step]
+    maximum = remaining + len(search_steps)
+    completed = 0
     for step in steps:
         if 'query' in step:
+            completed += 1
             queries.append({'query': step['query'], 'returned_ids': [h['id'] for h in step['hits']]})
+            observation = '\n\n'.join(f'[{h["id"]}] {html.escape(h["title"])}\n{html.escape(h["text"])}'
+                                        for h in step['hits'])
+            messages.extend([{'role': 'assistant', 'content': step['output']},
+                             {'role': 'user', 'content': f'<information>\n{observation}\n</information>\n'
+                              f'Searches remaining: {maximum - completed}.'}])
         if 'judge' in step:
             judgments.append({'judgment': step['judge'], 'claim': step['reason'], 'verified': False})
         for hit in step.get('hits', []):
@@ -37,8 +47,7 @@ def state_messages(question, steps, remaining, system_prompt):
     state = {'searches_remaining': remaining, 'queries_seen': queries,
              'previous_judgments_unverified': judgments,
              'evidence_ids': list(evidence)}
-    payload = '<task_state>\n' + html.escape(json.dumps(state, ensure_ascii=False)) + '\n</task_state>\n'
-    payload += '<information>\n' + '\n\n'.join(
-        f'[{h["id"]}] {html.escape(h["title"])}\n{html.escape(h["text"])}' for h in evidence.values()) + '\n</information>'
-    return [{'role': 'system', 'content': system_prompt}, {'role': 'user', 'content': question},
-            {'role': 'user', 'content': payload}]
+    if search_steps:
+        messages[-1]['content'] += '\n<task_state>\n' + html.escape(json.dumps(state, ensure_ascii=False)) + '\n</task_state>'
+        messages[-1]['content'] += f'\nSearches remaining: {remaining}. Start with <judge>sufficient: ...</judge> or <judge>insufficient: ...</judge>, then one action.'
+    return messages

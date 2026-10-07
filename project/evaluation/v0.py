@@ -37,11 +37,13 @@ def summary_text(report, results, relative_run):
              f"Status counts: {m['statuses']}",
              f"Insufficient evidence={m['insufficient_evidence']} | invalid citation IDs={m['invalid_citations']}",
              "Tokens include repeated prompt reads; episode time excludes model/index loading."]
-    if report.get("baseline_metrics") and report["status"] == "passed":
+    if report.get('smoke'):
+        lines.append('Scope: 8-task integration check only; not a development quality comparison.')
+    if report.get("baseline_metrics") and report["status"] == "passed" and not report.get('smoke'):
         baseline = report["baseline_metrics"]
         lines.append(f"Vs V0: EM {m['em_percent'] - baseline['em_percent']:+.2f} pp | "
                      f"F1 {m['f1_percent'] - baseline['f1_percent']:+.2f} pp")
-    if report.get("comparison_metrics") and report["status"] == "passed":
+    if report.get("comparison_metrics") and report["status"] == "passed" and not report.get('smoke'):
         reference = report["comparison_metrics"]
         lines.append(f"Vs {report.get('comparison_variant', 'V1')}: EM {m['em_percent'] - reference['em_percent']:+.2f} pp | "
                      f"F1 {m['f1_percent'] - reference['f1_percent']:+.2f} pp")
@@ -60,6 +62,10 @@ def summary_text(report, results, relative_run):
         lines.append("  Pred: " + " ".join(row["answer"].split())[:100] + " | Gold: " + row["gold"][:70])
     if report.get("error"):
         lines.append("Error: " + report["error"][:200])
+    if report.get('variant') == 'V3':
+        failures = [r for r in results if r['status'] != 'answered' and r['steps']]
+        for row in failures[:2]:
+            lines.append('Protocol sample ' + row['status'] + ': ' + ' '.join(row['steps'][-1]['output'].split())[:240])
     if report["status"] != "passed":
         lines.append("Incomplete run: scores cover completed tasks only; do not use as final baseline.")
     return "\n".join(lines)
@@ -85,11 +91,14 @@ def main():
     parser.add_argument("--config")
     parser.add_argument("--protocol", choices=("v1", "v2", "v3"), default="v1")
     parser.add_argument('--retriever-run', type=Path, help='Completed V3 E5 training run with index')
+    parser.add_argument('--smoke', action='store_true')
     parser.add_argument("--compare-run", type=Path, help="Optional completed V1 reference for V2")
     parser.add_argument("--limit", type=int, default=None, help="Optional partial dev run; omitted = all 200")
     parser.add_argument("--model-path", type=Path, help="Exported V1 policy; tokenizer stays identical to V0")
     parser.add_argument("--baseline-run", type=Path, help="Saved V0 run directory for matched V1 evaluation")
     args = parser.parse_args()
+    if args.smoke and args.protocol != 'v3':
+        parser.error('--smoke is only for V3 integration')
     if args.protocol in ("v2", "v3") and not args.model_path:
         parser.error("V2 evaluation requires an exported model")
     if (args.protocol == 'v3') != bool(args.retriever_run) or (args.protocol == 'v3' and not args.compare_run):
@@ -115,11 +124,13 @@ def main():
     if args.protocol == 'v3':
         from project.agent.state import SYSTEM_PROMPT as prompt_text, state_messages as history_builder
     group = args.protocol + '_eval' if args.protocol in ('v2', 'v3') else ("v1_eval" if args.model_path else "v0")
+    if args.smoke:
+        group = 'v3_smoke'
     runs = resource_path("AGENTIC_RUNS_DIR") / group
     run_id = "dev_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ_") + uuid4().hex[:6]
     out = runs / run_id
     out.mkdir(parents=True, exist_ok=False)
-    report = {"status": "running", "variant": variant, "config": config, "metrics": aggregate([], 0)}
+    report = {"status": "running", "variant": variant, "config": config, "metrics": aggregate([], 0), 'smoke': args.smoke}
     if baseline_report:
         report.update(baseline_metrics=baseline_report["metrics"], baseline_run=str(args.baseline_run))
     results = []
@@ -161,6 +172,9 @@ def main():
                 raise ValueError("V1 comparison settings differ")
             report.update(comparison_metrics=comparison["metrics"], comparison_run=str(args.compare_run))
         labels = {row["id"]: row for row in load_jsonl(data_dir / "dev.labels.jsonl")}
+        if args.smoke:
+            questions = questions[:8]
+            planned = len(questions)
         report["metrics"] = aggregate([], planned)
         report["full_dev_size"] = dataset["sizes"]["dev"]
         from project.retrieval.local import LocalRetriever
@@ -187,11 +201,11 @@ def main():
         if baseline_manifest and model_inventory(tokenizer_path) != baseline_manifest["policy_model"]:
             raise ValueError("Original V0 model/tokenizer inventory changed")
         tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path), local_files_only=True)
-        manifest = {"code": code_info(), "config": config, "question_split": "dev", "limit": args.limit,
+        manifest = {"code": code_info(), "config": config, "question_split": "dev", "limit": 8 if args.smoke else args.limit,
                     "dataset_manifest": dataset, "index_manifest": retriever.manifest,
                     "policy_model": model_inventory(model_path), "system_prompt": prompt_text, "protocol": args.protocol,
                     "enable_thinking": False, "scoring": "canonical_answer_em_f1_no_aliases",
-                    "tokenizer_path": str(tokenizer_path), "history_mode": 'source_preserving_state' if history_builder else "v0_rerender",
+                    "tokenizer_path": str(tokenizer_path), "history_mode": 'v2_history_plus_state_v2' if history_builder else "v0_rerender",
                     "retriever_training_run": str(args.retriever_run) if args.retriever_run else None,
                     "baseline_run": str(args.baseline_run) if args.baseline_run else None}
         save_json(out / "manifest.json", manifest)
@@ -232,6 +246,8 @@ def main():
                     print(f"{variant} dev: {number}/{planned}", flush=True)
                     report["metrics"] = aggregate(results, planned)
                     save_json(out / "report.json", report)
+        if args.protocol == 'v3' and not any(row['status'] == 'answered' for row in results):
+            raise RuntimeError('No valid answers: V3 protocol integration failed; inspect saved outputs')
         report["status"] = "passed"
     except Exception as exc:
         report["status"] = "failed"
