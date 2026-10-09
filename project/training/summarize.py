@@ -44,7 +44,7 @@ def summarize(out, steps, exit_code, version="v1"):
     passed = exit_code == 0 and updates_ok and saved and varied > 0 and masked > 0
     status = "PASSED" if passed else ("FAILED" if exit_code else "NEEDS_REVIEW")
     correction = None
-    if version in ("v2", "v4"):
+    if version in ("v2", "v4", "v4_base"):
         retrieval_path = out / "retrieval_audit.jsonl"
         retrieval = load_jsonl(retrieval_path) if retrieval_path.exists() else []
         correction = {"planned_calls": len(retrieval),
@@ -66,7 +66,7 @@ def summarize(out, steps, exit_code, version="v1"):
              f"Statuses: {statuses}", f"Final checkpoint: {saved} | exit={exit_code}"]
     if correction is not None:
         lines.append(f"Correction: {correction}")
-    if version == 'v4' and (out / 'selection.json').exists():
+    if version in ('v4', 'v4_base') and (out / 'selection.json').exists():
         selection = json.loads((out / 'selection.json').read_text())
         report['selection'] = selection
         save_json(out / 'report.json', report)
@@ -78,8 +78,8 @@ def summarize(out, steps, exit_code, version="v1"):
         row = metrics[step]
         lines.append(f"Step {step}: grad={row.get('actor/grad_norm', 0):.4g} delta={row.get('actor/probe_parameter_delta_max', 0):.4g}")
     lines.append("Scope: training integration; no claim of dev improvement.")
-    if version == 'v4':
-        lines.append("V4: smoke metrics are integration only; main selection requires independent dev evaluation.")
+    if version in ('v4', 'v4_base'):
+        lines.append(f"{version.upper()}: smoke metrics are integration only; main selection requires independent dev evaluation.")
     if exit_code:
         errors = [line.strip() for line in log.splitlines() if re.search(r'(Error:|Exception:|OutOfMemory|AssertionError)', line)]
         lines.extend(line[:200] for line in errors[-3:])

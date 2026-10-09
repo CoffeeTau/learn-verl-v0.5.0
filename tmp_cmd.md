@@ -1,7 +1,15 @@
-不必为了与训练内数字完全相同继续反复调参。下一步用已有脚本做一次**只读逐题配对检查**：
+**这是目标提醒＋GRPO 的可行性实验，尚不是带人工审核状态标签的 SFT。** 本地54项测试通过；服务器GPU运行尚待验证。实验日志和操作文档 (project/V4\_BASE\_RUNBOOK.md)已更新。
+
+同步代码到服务器后，先跑8卡冒烟：
 
 ```
-bash project/scripts/run.sh python3 -m project.scripts.review_v4 \
-  --aligned --eval-run dev_20261009T064354Z_7f3ed6
+bash project/scripts/run.sh bash project/scripts/mainline.sh v4-base \
+  --mode smoke --gpus 8
 ```
 
+冒烟验收后，正式训练：
+
+```
+bash project/scripts/run.sh bash project/scripts/mainline.sh v4-base \
+  --mode main --gpus 8
+```

@@ -1,11 +1,11 @@
 """veRL 0.5.0 AgentLoop adapter. Gold labels never enter this interface."""
-import html
 import time
 import uuid
 import ray
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopMetrics, AgentLoopOutput
 from project.agent.search import SYSTEM_PROMPT, parse_action
 from project.training.protocol import continuation_ids
+from project.agent.goal_anchor import system_prompt, observation_text
 
 
 class SearchAgentLoop(AgentLoopBase):
@@ -23,7 +23,7 @@ class SearchAgentLoop(AgentLoopBase):
         version = getattr(self, "version", "v1")
         prompt_text = SYSTEM_PROMPT
         if version == "v2":
-            from project.agent.correction import SYSTEM_PROMPT as prompt_text
+            prompt_text = system_prompt(bool(getattr(self.config, "agentic", {}).get("goal_anchor", False)))
             from project.agent.correction import parse_action as parse_correction
         messages = list(messages)
         if len(messages) != 2 or messages[0]["content"] != prompt_text.format(max_searches=cfg["max_searches"]):
@@ -69,9 +69,8 @@ class SearchAgentLoop(AgentLoopBase):
             else:
                 hits = await self.retriever.search.remote(question, action["query"], cfg["top_k"])
             metrics.tool_calls += time.monotonic() - start
-            observation = "\n\n".join(f"[{hit['id']}] {html.escape(hit['title'])}\n{html.escape(hit['text'])}"
-                                          for hit in hits)
-            observation = f"<information>\n{observation}\n</information>\nSearches remaining: {cfg['max_searches'] - search_count - 1}."
+            observation = observation_text(hits, cfg['max_searches'] - search_count - 1,
+                                           question, bool(getattr(self.config, "agentic", {}).get("goal_anchor", False)))
             inserted = continuation_ids(self.tokenizer, observation, tokens)
             # Finish on the last sampled action if another generation cannot fit.
             if len(prompt) + len(response) + len(inserted) + cfg["max_new_tokens"] > cfg["max_context_tokens"]:

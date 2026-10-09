@@ -1,14 +1,14 @@
 """Standalone counterpart of CorrectionAgentLoop; preserve sampled token IDs."""
-import html
 import time
-from project.agent.correction import SYSTEM_PROMPT, parse_action
+from project.agent.correction import parse_action
 from project.training.protocol import continuation_ids
+from project.agent.goal_anchor import system_prompt, observation_text
 
 
-def run_continuation(question, generate_ids, search, config, tokenizer, prompt_limit=512, response_limit=8192):
+def run_continuation(question, generate_ids, search, config, tokenizer, prompt_limit=512, response_limit=8192, goal_anchor=False):
     started = time.monotonic()
     prompt = tokenizer.apply_chat_template([
-        {'role': 'system', 'content': SYSTEM_PROMPT.format(max_searches=config['max_searches'])},
+        {'role': 'system', 'content': system_prompt(goal_anchor).format(max_searches=config['max_searches'])},
         {'role': 'user', 'content': question}], tokenize=True,
         add_generation_prompt=True, enable_thinking=False)
     if len(prompt) > prompt_limit:
@@ -52,8 +52,7 @@ def run_continuation(question, generate_ids, search, config, tokenizer, prompt_l
         hits = search(question, action['query'], config['top_k'])
         step.update(query=action['query'], hits=hits)
         seen.update(h['id'] for h in hits)
-        observation = '\n\n'.join(f"[{h['id']}] {html.escape(h['title'])}\n{html.escape(h['text'])}" for h in hits)
-        observation = f"<information>\n{observation}\n</information>\nSearches remaining: {config['max_searches'] - search_count - 1}."
+        observation = observation_text(hits, config['max_searches'] - search_count - 1, question, goal_anchor)
         inserted = continuation_ids(tokenizer, observation, ids)
         if len(prompt) + len(response) + len(inserted) + cap > config['max_context_tokens']:
             break

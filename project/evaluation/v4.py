@@ -17,18 +17,21 @@ from project.evaluation.v1 import export_model
 from project.training.v4 import read, validate_retriever
 
 
-def main():
+def main(version="v4"):
+    base = version == "v4_base"
+    if version not in ("v4", "v4_base"):
+        raise ValueError("Unknown evaluation stage")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--train-run', required=True)
-    parser.add_argument('--history-mode', choices=['rerender', 'token-continuation'], default='rerender')
+    parser.add_argument('--history-mode', choices=['token-continuation'] if base else ['rerender', 'token-continuation'], default='token-continuation' if base else 'rerender')
     parser.add_argument('--expect-step', type=int, help='Fail if the selected checkpoint differs')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.train_run):
         parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
-    train = runs / 'v4' / args.train_run
+    train = runs / version / args.train_run
     manifest, report = read(train / 'manifest.json'), read(train / 'report.json')
-    if manifest['mode'] != 'main' or manifest['version'] != 'v4' or report['status'] != 'PASSED':
+    if manifest['mode'] != 'main' or manifest['version'] != version or report['status'] != 'PASSED':
         raise ValueError('Use a passed V4 main run, not smoke')
     source, corpus = resource_path('AGENTIC_PROCESSED_DATA_DIR'), resource_path('AGENTIC_CORPUS_DIR')
     if model_inventory(resource_path('AGENTIC_MODEL_DIR')) != manifest['tokenizer']:
@@ -53,11 +56,20 @@ def main():
     if args.expect_step is not None and step != args.expect_step:
         raise ValueError('Selected checkpoint differs from --expect-step')
     aligned = args.history_mode == 'token-continuation'
+    if base and not aligned:
+        raise ValueError('V4-base only supports token continuation')
+    from project.agent.goal_anchor import system_prompt
+    prompt_text = system_prompt(base)
+    if base and (not manifest.get('goal_anchor') or manifest.get('system_prompt') != prompt_text
+                 or manifest.get('goal_anchor_sha256') != sha256(Path(__file__).resolve().parents[1] / 'agent/goal_anchor.py')):
+        raise ValueError('Goal-anchor training prompt changed')
     sampling = dict(temperature=0.0)
     prompt_limit, response_limit = 512, 8192
     if aligned:
         import yaml
         saved = yaml.safe_load((train / 'config.yaml').read_text())
+        if bool(saved['agentic'].get('goal_anchor', False)) != base:
+            raise ValueError('Training/evaluation goal anchor differs')
         rollout = saved['actor_rollout_ref']['rollout']
         sampling.update(temperature=rollout['val_kwargs']['temperature'],
                         top_p=rollout['val_kwargs']['top_p'], top_k=rollout['top_k'],
@@ -67,7 +79,7 @@ def main():
     if not step and model_inventory(policy) != manifest['policy']:
         raise ValueError('Initial policy changed')
     run_id = 'dev_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid.uuid4().hex[:6]
-    out = runs / ('v4_eval_aligned' if aligned else 'v4_eval') / run_id
+    out = runs / ('v4_base_eval' if base else ('v4_eval_aligned' if aligned else 'v4_eval')) / run_id
     out.mkdir(parents=True)
     summary = {'status': 'running', 'train_run': args.train_run, 'selected_step': step,
                'history_mode': args.history_mode, 'groups': {}}
@@ -85,7 +97,7 @@ def main():
         save_json(out / 'manifest.json', {'code': code_info(), 'training_manifest': manifest,
                   'selection': selection, 'policy_model': model_inventory(policy),
                   'tokenizer': model_inventory(tokenizer_path), 'config': config,
-                  'system_prompt': SYSTEM_PROMPT, 'protocol': 'v2', 'history_mode': args.history_mode,
+                  'goal_anchor': base, 'system_prompt': prompt_text, 'protocol': 'v2', 'history_mode': args.history_mode,
                   'sampling': sampling, 'training_config_sha256': sha256(train / 'config.yaml'),
                   'scoring': 'canonical_answer_em_f1_no_aliases', 'enable_thinking': False})
         llm = LLM(model=str(policy), tokenizer=str(tokenizer_path), dtype='bfloat16', tensor_parallel_size=1,
@@ -119,7 +131,7 @@ def main():
                         def generate_ids(ids):
                             return llm.generate([{'prompt_token_ids': ids}], params, use_tqdm=False)[0].outputs[0].token_ids
                         result = run_continuation(task['question'], generate_ids, search, config, tokenizer,
-                                                  prompt_limit, response_limit)
+                                                  prompt_limit, response_limit, goal_anchor=base)
                     else:
                         result = run_episode(task['question'], generate, search,
                                              config, system_prompt=SYSTEM_PROMPT, action_parser=parse_action)
@@ -130,7 +142,7 @@ def main():
                     handle.flush()
                     results.append(result)
                     if i % 25 == 0 or i == len(chosen):
-                        print(f'V4 {group}: {i}/{len(chosen)}', flush=True)
+                        print(f'{version.upper()} {group}: {i}/{len(chosen)}', flush=True)
             summary['groups'][group] = aggregate(results, len(chosen))
             summary['groups'][group]['applied'] = sum(r['perturbation']['applied'] for r in results)
             if group == 'natural':
@@ -140,7 +152,7 @@ def main():
     except Exception as exc:
         summary.update(status='failed', error=f'{type(exc).__name__}: {exc}', traceback=traceback.format_exc())
     save_json(out / 'report.json', summary)
-    lines = [f"=== V4 DEV | {summary['status'].upper()} ===", f'Run: {run_id} | selected step={step}']
+    lines = [f"=== {version.upper()} DEV | {summary['status'].upper()} ===", f'Run: {run_id} | selected step={step}']
     for group, m in summary['groups'].items():
         lines.append(f"{group}: N={m['completed']} EM={m['em_percent']:.2f}% F1={m['f1_percent']:.2f}% "
                      f"searches={m['mean_searches']:.2f} tokens={m['mean_tokens']:.0f}")

@@ -10,6 +10,7 @@ import sys
 import uuid
 from project.common import (code_info, load_jsonl, model_inventory, resource_path,
                             save_json, sha256, signature)
+from project.agent.goal_anchor import system_prompt
 from project.training.hard_episodes import build_plan, prepare_plan
 from project.training.train import build_config, print_progress
 from project.training.summarize import summarize
@@ -65,11 +66,14 @@ def prepare_validation(out, data_dir, smoke):
     return expected
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(version="v4"):
+    base = version == "v4_base"
+    if version not in ("v4", "v4_base"):
+        raise ValueError("Unknown training stage")
+    parser = argparse.ArgumentParser(description="V4-base: initialize V4 step100 and train original-goal tracking with GRPO." if base else __doc__)
     parser.add_argument('--mode', choices=('smoke', 'main'), default='smoke')
     parser.add_argument('--gpus', type=int, choices=(2, 4, 8), default=8)
-    parser.add_argument('--init-run', default='main_20261006T164842Z_548d39')
+    parser.add_argument('--init-run', default='main_20261007T095646Z_3f4cdb' if base else 'main_20261006T164842Z_548d39')
     parser.add_argument('--retriever-run', default='main_20261007T042356Z_357492')
     args = parser.parse_args()
     if any(not re.fullmatch(r'[A-Za-z0-9_-]+', v) for v in (args.init_run, args.retriever_run)):
@@ -78,7 +82,7 @@ def main():
     steps = 2 if smoke else 125
     runs = resource_path('AGENTIC_RUNS_DIR')
     run_id = args.mode + '_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid.uuid4().hex[:6]
-    out = runs / 'v4' / run_id
+    out = runs / version / run_id
     out.mkdir(parents=True)
     code = 1
     try:
@@ -92,24 +96,41 @@ def main():
         source, corpus = resource_path('AGENTIC_PROCESSED_DATA_DIR'), resource_path('AGENTIC_CORPUS_DIR')
         retriever_run = runs / 'v3_retriever' / args.retriever_run
         retrieval = validate_retriever(retriever_run, source, corpus)
-        parent = runs / 'v2' / args.init_run
+        parent = runs / ('v4' if base else 'v2') / args.init_run
         parent_report, parent_manifest = read(parent / 'report.json'), read(parent / 'manifest.json')
-        if parent_report['status'] != 'PASSED' or parent_manifest['mode'] != 'main' or parent_manifest['version'] != 'v2':
-            raise ValueError('V4 requires a passed V2 main training run')
+        if parent_report['status'] != 'PASSED' or parent_manifest['mode'] != 'main' or parent_manifest['version'] != ('v4' if base else 'v2'):
+            raise ValueError('Initialization must be a passed main run of the preceding stage')
         if parent_manifest['data']['source_manifest_sha256'] != sha256(source / 'manifest.json'):
             raise ValueError('V2 training dataset changed')
-        policy = export_model(parent, int(parent_manifest['steps']))
-        data_dir, prepared = prepare(version='v4', output_dir=out / 'data')
+        parent_step = 100 if base else int(parent_manifest['steps'])
+        if base:
+            from project.training.v4_monitor import select_checkpoint
+            selected = select_checkpoint(load_jsonl(parent / 'validation_metrics.jsonl'))
+            if selected != read(parent / 'selection.json') or selected['selected_step'] != 100:
+                raise ValueError('V4-base requires the verified V4 selected step100')
+            if parent_manifest['retrieval'] != retrieval:
+                raise ValueError('Do not change the V4 step100 retriever')
+            if parent_manifest['tokenizer'] != model_inventory(resource_path('AGENTIC_MODEL_DIR')):
+                raise ValueError('Parent tokenizer changed')
+        policy = export_model(parent, parent_step)
+        data_dir, prepared = prepare(version=version, output_dir=out / 'data')
         if prepared['task'] != parent_manifest['data']['task']:
             raise ValueError('Task budgets/config changed since V2')
         hard = prepare_plan(source, corpus, out / 'hard_plan.json')
         expected = prepare_validation(out, data_dir, smoke)
+        if base:
+            if sha256(out / 'hard_plan.json') != sha256(parent / 'hard_plan.json'):
+                raise ValueError('Training perturbation plan differs from V4')
+            if not smoke:
+                for name in ('dev_hard_plan', 'validation_tasks'):
+                    if sha256(out / (name + '.json')) != parent_manifest[name + '_sha256']:
+                        raise ValueError('Development plan differs from V4')
         prepared['files'] = {name: sha256(data_dir / name) for name in ('train.parquet', 'dev.parquet')}
-        prepared.update(version='v4', hard_episodes=hard, validation_sizes={k: len(v) for k, v in expected.items()})
+        prepared.update(version=version, hard_episodes=hard, validation_sizes={k: len(v) for k, v in expected.items()})
         save_json(data_dir / 'manifest.json', prepared)
         config = build_config(out, data_dir, prepared, args.gpus, steps, smoke, 'v2', policy, overrides={
             'trainer.custom_trainer': {'path': 'pkg://project.training.v4_trainer', 'name': 'V4Trainer'},
-            'trainer.tensorboard_dir': str(resource_path('AGENTIC_ROOT') / 'tensorboard' / ('v4_' + run_id)),
+            'trainer.tensorboard_dir': str(resource_path('AGENTIC_ROOT') / 'tensorboard' / (version + '_' + run_id)),
             'trainer.val_before_train': True, 'trainer.test_freq': 2 if smoke else 25,
             'trainer.validation_data_dir': str(out / 'validation'),
             'trainer.max_actor_ckpt_to_keep': 2 if smoke else 5,
@@ -120,7 +141,8 @@ def main():
                         'corpus': str(corpus), 'corpus_sha256': prepared['corpus_sha256'],
                         'index': str(retriever_run / 'index'), 'retriever': str(retriever_run / 'model'),
                         'hard_plan': str(out / 'hard_plan.json'), 'dev_hard_plan': str(out / 'dev_hard_plan.json'),
-                        'retrieval_audit': str(out / 'retrieval_audit.jsonl'), 'v4_monitor': True}})
+                        'retrieval_audit': str(out / 'retrieval_audit.jsonl'), 'v4_monitor': True,
+                        'goal_anchor': base}})
         loop_path = out / 'agent_loop.yaml'
         loops = OmegaConf.load(loop_path)
         loops.append({'name': 'agentic_correction_dev_hard',
@@ -129,19 +151,23 @@ def main():
         repo = Path(__file__).resolve().parents[2]
         core = ['verl/trainer/main_ppo.py', 'verl/trainer/ppo/ray_trainer.py', 'verl/utils/tracking.py',
                 'verl/workers/actor/dp_actor.py', 'verl/trainer/ppo/reward.py']
-        save_json(out / 'manifest.json', {'version': 'v4', 'mode': args.mode, 'steps': steps,
+        save_json(out / 'manifest.json', {'version': version, 'mode': args.mode, 'steps': steps,
                   'code': code_info(), 'core_sha256': {p: sha256(repo / p) for p in core},
                   'data': prepared, 'policy': model_inventory(policy), 'parent_run': str(parent),
+                  'parent_step': parent_step, 'goal_anchor': base,
+                  'goal_anchor_sha256': sha256(repo / 'project/agent/goal_anchor.py') if base else None,
                   'tokenizer': model_inventory(resource_path('AGENTIC_MODEL_DIR')),
                   'retrieval': retrieval, 'protocol': 'v2', 'state_ledger': False,
                   'dev_hard_plan_sha256': sha256(out / 'dev_hard_plan.json'),
                   'validation_tasks_sha256': sha256(out / 'validation_tasks.json'),
-                  'reward': 'strict canonical terminal F1; KL loss .001; reference=initial V2'})
-        print(f'=== V4 PREPARE | PASSED ===\nPolicy: V2 | retriever/index: frozen V3 | input: V2 (no ledger)\n'
+                  'reward': 'strict canonical terminal F1; KL loss .001; reference=initial policy',
+                  'system_prompt': system_prompt(base)})
+        print(f'=== {version.upper()} PREPARE | PASSED ===\n'
+              f'Policy: {parent.name} step={parent_step} | retriever: frozen V3 | goal anchor={base}\n'
               f'Train: 2000 | hard candidates: {sum(hard["modes"].values())} | '
               f'dev natural={len(expected["natural"])} hard={len(expected["hard"])}\n'
               f'{steps} updates | GPUs={args.gpus} | 16 questions x 4 samples\n'
-              f'Run: {run_id}\nLog: runtime/runs/v4/{run_id}/train.log', flush=True)
+              f'Run: {run_id}\nLog: {out / "train.log"}', flush=True)
         env = dict(os.environ, VLLM_USE_V1='1', VLLM_WORKER_MULTIPROC_METHOD='spawn',
                    TOKENIZERS_PARALLELISM='false', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', OMP_NUM_THREADS='1')
         with (out / 'train.log').open('w') as log:
@@ -152,7 +178,7 @@ def main():
                     try:
                         process.wait(timeout=60)
                     except subprocess.TimeoutExpired:
-                        print_progress(out, steps, 'v4')
+                        print_progress(out, steps, version)
                 code = process.returncode
             finally:
                 if process.poll() is None:
@@ -176,7 +202,7 @@ def main():
         import traceback
         with (out / 'train.log').open('a') as log:
             traceback.print_exc(file=log)
-    passed = summarize(out, steps, code, version='v4')
+    passed = summarize(out, steps, code, version=version)
     return 0 if passed else 1
 
 
