@@ -71,7 +71,17 @@ def summarize(out, steps, exit_code, version="v1"):
         report['selection'] = selection
         save_json(out / 'report.json', report)
         m = selection['groups']
-        lines.append(f"Selected step={selection['selected_step']} | same-environment step0 improved={selection['improved_over_step0']}")
+        # Legacy selection flag means a later checkpoint won (possibly tokens only).
+        # Keep selection.json schema/ranking stable for historical export checks.
+        lines.append(f"Selected step={selection['selected_step']} | later checkpoint selected={selection['selected_step'] != 0}")
+        history_path = out / 'validation_metrics.jsonl'
+        if history_path.exists():
+            history = load_jsonl(history_path)
+            if history and int(history[0]['step']) == 0:
+                baseline = history[0]['groups']
+                lines.append(f"Vs same-environment step0: natural EM {(m['natural']['em'] - baseline['natural']['em']) * 100:+.2f} pp | "
+                             f"F1 {(m['natural']['f1'] - baseline['natural']['f1']) * 100:+.2f} pp | "
+                             f"hard EM {(m['hard']['em'] - baseline['hard']['em']) * 100:+.2f} pp")
         lines.append(f"Selected dev: natural EM={m['natural']['em']:.2%} F1={m['natural']['f1']:.2%} | "
                      f"matched natural EM={m['natural_matched']['em']:.2%} hard EM={m['hard']['em']:.2%}")
     for step in sorted(metrics)[-2:]:

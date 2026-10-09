@@ -4,7 +4,7 @@
 
 ## 这轮具体做什么
 
-从 `v4/main_20261007T095646Z_3f4cdb` 的选中 step100 初始化 actor 和 KL reference，固定 V3 E5/index。每次工具结果后，程序重复不可变的原问题；judge 在原有40词限制内说明 `target / known / missing`，要求已完成原关系链就停止、中间实体已知但属性缺失则继续。不要求最终实体另有独立页面。
+从 `v4/main_20261007T095646Z_3f4cdb` 的选中 step100 初始化 actor 和 KL reference，固定 V3 E5/index。每次工具结果后，程序重复不可变的原问题；judge 在原有40词限制内说明 `known / missing`（target由外部原问题固定），要求已完成原关系链就停止、中间实体已知但属性缺失则继续。不要求最终实体另有独立页面。
 
 这是**提示及终局奖励 GRPO 的可行性实验**，不是已完成的证据状态 SFT。进度字段仅为提示要求，不增加格式拒绝规则；模型写出的 known/sufficient 不是真值，不给额外过程分。没有自动制作弱标签 SFT，因为标题/答案词匹配不能可靠证明关系成立。若本轮没有改善，下一步仍是审核 train-only 状态→动作示例，不能把失败解释成多跑几轮必然有效。
 
@@ -65,3 +65,7 @@ bash project/scripts/run.sh python3 -m project.scripts.cases_v4 --stage base --e
 ```
 
 旧冻结test不参与这轮调参。
+
+## 冒烟后的提示修订
+
+首轮smoke协议失败22/128。保存输出显示judge-only、判断/动作冲突及长目标复述。修订为不在judge重复target/长名称/来源ID，尽量25词内（严格上限仍40），显式要求judge后同一响应必须跟一个动作。未更改解析、reward或选模；历史selection中的improved_over_step0只代表选中后续步，新摘要改报EM/F1差值。首次smoke的step0与2自然EM/F1及hardEM相同，仅自然平均token2599→2592.5。同步后先重新smoke，再决定正式训练。

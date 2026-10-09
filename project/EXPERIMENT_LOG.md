@@ -265,3 +265,6 @@ Run：`dev_20261009T064354Z_7f3ed6`，路径`v4_eval_aligned`，COMPLETE；同�
 - 来源为用户服务器摘要截图，Run `smoke_20261009T085938Z_cf2bf4`。8GPU、2/2更新、128轨迹；梯度及采样参数变化有效，checkpoint存在，exit=0。初始化V4 step100、固定V3检索器、goal_anchor开启；首次干预24/24生效。
 - answered106/128；协议失败22/128（17.19%）：judge/action冲突12、动作格式6、invalid_judge4。组内reward有差异5/32（15.63%），有GRPO终局相对信号，但不能据此断定信号充足或能力改善。先检查已保存失败原文及step0/2验证协议数，再决定正式训练；不放宽评分或直接归因新提示。
 - 选中step2；自然8题EM75%/F183.33%，matched/hard各2题EM100%。仅冒烟小样本，不与完整200/50开发基线比较，也不证明祖父/生日问题修复。尚未读取远端完整audit。
+
+- 首轮smoke审计截图：动作格式失败样本只输出judge无action；冲突样本已自述两个出生地但仍insufficient并答No（未见hits，不能确认事实）；invalid_judge样本长篇复述电影比较目标/实体，超40词。只展示各类一例，不能将22条全归为同一原因。step0/2自然EM75%/F183.33%、hardEM100%、协议失败自然1/hard0均相同；step2被选中主要因自然tokens2599→2592.5，非准确率提升。
+- 据此缩短提示：target由外部固定原问题承担，judge仅known/missing，建议25词内且仍执行40词硬上限；明确judge与action同响应。保留全部严格评分。摘要展示改为准确率差值，保持历史selection结构/选模规则兼容；下一步重新2步smoke，不直接启动125步。
