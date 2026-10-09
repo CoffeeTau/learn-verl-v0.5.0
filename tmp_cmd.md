@@ -1,8 +1,8 @@
-**当前最值得注意：V4 的困难题退化不能主要用格式错误解释。** 同时，`answered` 也不等于“自信答错”，里面可能包含拒答，需要逐题看。
-
-我已补好只读提取脚本，并更新实验日志及案例文档。代码同步到服务器后运行：
+**固定 step100，只评测，不重新训练。**
 
 ```
-bash project/scripts/run.sh python3 -m project.scripts.cases_v4 \
-  --eval-run dev_20261007T160345Z_37aa80
+CUDA_VISIBLE_DEVICES=0 bash project/scripts/run.sh \
+  python3 -m project.evaluation.v4 \
+  --train-run main_20261007T095646Z_3f4cdb \
+  --expect-step 100 --history-mode token-continuation
 ```

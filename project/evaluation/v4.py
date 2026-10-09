@@ -20,6 +20,8 @@ from project.training.v4 import read, validate_retriever
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--train-run', required=True)
+    parser.add_argument('--history-mode', choices=['rerender', 'token-continuation'], default='rerender')
+    parser.add_argument('--expect-step', type=int, help='Fail if the selected checkpoint differs')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.train_run):
         parser.error('Invalid run ID')
@@ -48,13 +50,27 @@ def main():
     if selection != read(train / 'selection.json'):
         raise ValueError('Checkpoint selection changed')
     step = selection['selected_step']
+    if args.expect_step is not None and step != args.expect_step:
+        raise ValueError('Selected checkpoint differs from --expect-step')
+    aligned = args.history_mode == 'token-continuation'
+    sampling = dict(temperature=0.0)
+    prompt_limit, response_limit = 512, 8192
+    if aligned:
+        import yaml
+        saved = yaml.safe_load((train / 'config.yaml').read_text())
+        rollout = saved['actor_rollout_ref']['rollout']
+        sampling.update(temperature=rollout['val_kwargs']['temperature'],
+                        top_p=rollout['val_kwargs']['top_p'], top_k=rollout['top_k'],
+                        repetition_penalty=1.0)
+        prompt_limit, response_limit = rollout['prompt_length'], rollout['response_length']
     policy = export_model(train, step) if step else Path(manifest['policy']['path'])
     if not step and model_inventory(policy) != manifest['policy']:
         raise ValueError('Initial policy changed')
     run_id = 'dev_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid.uuid4().hex[:6]
-    out = runs / 'v4_eval' / run_id
+    out = runs / ('v4_eval_aligned' if aligned else 'v4_eval') / run_id
     out.mkdir(parents=True)
-    summary = {'status': 'running', 'train_run': args.train_run, 'selected_step': step, 'groups': {}}
+    summary = {'status': 'running', 'train_run': args.train_run, 'selected_step': step,
+               'history_mode': args.history_mode, 'groups': {}}
     try:
         from project.retrieval.local import LocalRetriever
         from transformers import AutoTokenizer
@@ -69,12 +85,13 @@ def main():
         save_json(out / 'manifest.json', {'code': code_info(), 'training_manifest': manifest,
                   'selection': selection, 'policy_model': model_inventory(policy),
                   'tokenizer': model_inventory(tokenizer_path), 'config': config,
-                  'system_prompt': SYSTEM_PROMPT, 'protocol': 'v2', 'history_mode': 'v0_rerender',
+                  'system_prompt': SYSTEM_PROMPT, 'protocol': 'v2', 'history_mode': args.history_mode,
+                  'sampling': sampling, 'training_config_sha256': sha256(train / 'config.yaml'),
                   'scoring': 'canonical_answer_em_f1_no_aliases', 'enable_thinking': False})
         llm = LLM(model=str(policy), tokenizer=str(tokenizer_path), dtype='bfloat16', tensor_parallel_size=1,
                   max_model_len=config['max_context_tokens'], max_num_seqs=1,
                   gpu_memory_utilization=config['gpu_memory_utilization'], enforce_eager=True, seed=config['seed'])
-        params = SamplingParams(temperature=0.0, max_tokens=config['max_new_tokens'],
+        params = SamplingParams(**sampling, max_tokens=config['max_new_tokens'],
                                 stop=['</search>', '</answer>'], include_stop_str_in_output=True)
         def generate(messages):
             ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, enable_thinking=False)
@@ -96,8 +113,16 @@ def main():
                 for i, task in enumerate(chosen, 1):
                     audit = {'applied': False}
                     spec = plan[task['question']] if group == 'hard' else None
-                    result = run_episode(task['question'], generate, episode_search(retriever, spec, paragraphs, audit),
-                                         config, system_prompt=SYSTEM_PROMPT, action_parser=parse_action)
+                    search = episode_search(retriever, spec, paragraphs, audit)
+                    if aligned:
+                        from project.evaluation.continuation import run_continuation
+                        def generate_ids(ids):
+                            return llm.generate([{'prompt_token_ids': ids}], params, use_tqdm=False)[0].outputs[0].token_ids
+                        result = run_continuation(task['question'], generate_ids, search, config, tokenizer,
+                                                  prompt_limit, response_limit)
+                    else:
+                        result = run_episode(task['question'], generate, search,
+                                             config, system_prompt=SYSTEM_PROMPT, action_parser=parse_action)
                     gold = labels[task['id']]
                     scores = score_answer(result['answer'], gold['answer']) if result['status'] == 'answered' else {'em': 0., 'f1': 0.}
                     result.update(id=task['id'], question=task['question'], gold=gold['answer'], perturbation=audit, **scores)
@@ -120,7 +145,7 @@ def main():
         lines.append(f"{group}: N={m['completed']} EM={m['em_percent']:.2f}% F1={m['f1_percent']:.2f}% "
                      f"searches={m['mean_searches']:.2f} tokens={m['mean_tokens']:.0f}")
         lines.append(f"  statuses={m['statuses']} | applied={m.get('applied', 0)}")
-    lines.append('Independent dev only; historical test untouched. Training validation uses token continuation; this run rerenders history.')
+    lines.append(f'History: {args.history_mode}; same dev/strict scoring; engine deployment may still differ from trainer.')
     if summary.get('error'):
         lines.append(summary['error'][:240])
     show_summary(out, '\n'.join(lines))

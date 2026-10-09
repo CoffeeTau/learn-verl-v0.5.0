@@ -31,11 +31,12 @@ def paired(before, after):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--eval-run', required=True)
+    parser.add_argument('--aligned', action='store_true', help='Read v4_eval_aligned')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.eval_run):
         parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
-    out = runs / 'v4_eval' / args.eval_run
+    out = runs / ('v4_eval_aligned' if args.aligned else 'v4_eval') / args.eval_run
     report = json.loads((out / 'report.json').read_text())
     if report['status'] != 'complete':
         raise ValueError('Use a completed V4 development evaluation')
