@@ -1,8 +1,7 @@
-**固定 step100，只评测，不重新训练。**
+不必为了与训练内数字完全相同继续反复调参。下一步用已有脚本做一次**只读逐题配对检查**：
 
 ```
-CUDA_VISIBLE_DEVICES=0 bash project/scripts/run.sh \
-  python3 -m project.evaluation.v4 \
-  --train-run main_20261007T095646Z_3f4cdb \
-  --expect-step 100 --history-mode token-continuation
+bash project/scripts/run.sh python3 -m project.scripts.review_v4 \
+  --aligned --eval-run dev_20261009T064354Z_7f3ed6
 ```
+
