@@ -1,0 +1,5 @@
+在服务器仓库根目录启动 TensorBoard
+
+bash project/scripts/run.sh bash project/scripts/tensorboard.sh
+
+脚本会读取 `runtime/tensorboard`，监听服务器的 `6006` 端口。如果之前的 TensorBoard 还在运行，可以直接使用原来的页面。
