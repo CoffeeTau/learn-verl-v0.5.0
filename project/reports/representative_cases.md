@@ -149,3 +149,13 @@ V0错把父亲作答案、V1转向无关人物、V2同名头衔混淆、V3拒答
 - **乐队/国籍比较**：乐队自然/hard均2次搜索正确No，国籍自然2次搜索正确No。局部效率改善，不代表全部任务修复。
 - **新困难退化：Some Came Running导演去世日期**：自然2次搜索正确 `July 25, 1986`；hard同样2次搜索，正常结束却答 `11 January 2010`。形式上与生日题同为实体→日期，但错误实体选择、属性编造或提前停止均需hits核实，不先定同因。
 - **生日题**：本次自动摘要未包含它，状态未知。下一步读取该题V4-base自然/hard完整轨迹，结合上例区分第一跳身份错误与第二跳属性缺失；不在开发集上制作训练标签。
+
+### 生日题逐轮证据确认（2026-10-10）
+
+用户提供V4-base自然/hard截图，部分长行横向截断；以下以可见原文为依据。
+
+- 自然：EM1，2搜，November 27, 1941。第一轮返回正确歌曲；下一轮judge明确known=Eddie Rabbitt演唱、missing=其生日，随后hits有Eddie Rabbitt传记及正确出生日期。自然版此前V4也答对，因此属于能力保持，不记作新修复。
+- hard：EM0，2搜，March 1, 1904。首次related_distractors移除正确歌曲，返回I Know Why (And So Do You)、If You Ever Fall in Love Again、Why Did You Do That?。模型把第一首其他歌曲的Glenn Miller误绑定到原歌曲，写入known，再搜索Glenn Miller birthday。
+- 第二轮同时返回Glenn Miller传记（March 1, 1904）和正确原歌曲段落（明确Eddie Rabbitt）。模型没有据此修正演唱者，最终仍宣称原歌曲演唱者Glenn Miller并判sufficient；引用其他歌曲ID与Glenn Miller传记ID。日期有原文出处，但属于错误人物；第一跳关系不被引用支持，不能叫纯粹无证据日期生成。
+- 分层诊断：初始关键证据被移除→关系误绑定→纠错证据已到达却未更新known→错误人物属性作答。第二轮尚未检索到正确人物生日，不能说全部必要证据齐全，也不能说完全没有可纠错证据。应先修正第一跳再补Eddie Rabbitt生日；只鼓励更多搜索不足以阻止沿错误实体延伸。
+- 保留原目标提醒与简短judge作为当前主干，但known字段是可修正假设而非可信缓存；下一步train-only候选监督应包含关系来源核对、新证据纠错及修正后补查。先核实另一日期退化案例，不从单例推断全部hard失败同因。
