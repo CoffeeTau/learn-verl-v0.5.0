@@ -1,34 +1,8 @@
-```
-bash project/scripts/run.sh python3 - <<'PY'
-import json
-import textwrap
-from pathlib import Path
+bash project/scripts/run.sh python3 -m project.scripts.audit_v4_training \
+  --stage v4_base --train-run main_20261009T100336Z_3e49ab
 
-root = Path("runtime/runs/v4_base_eval/dev_20261010T063219Z_9caa63")
-lines = []
-for group in ("natural", "hard"):
-    rows = [json.loads(s) for s in (root / f"{group}.jsonl").read_text().splitlines()]
-    matches = [r for r in rows if "some came running" in r["question"].lower()]
-    if len(matches) != 1:
-        raise SystemExit(f"{group}: 找到{len(matches)}题，请检查")
-    r = matches[0]
-    summary = f"{group}: EM={r['em']} searches={r['searches']} status={r['status']} pred={r['answer']}"
-    print(summary)
-    lines += [f"\n=== {group} ===", summary,
-              f"Question: {r['question']}", f"Gold: {r['gold']}",
-              "Perturbation: " + json.dumps(r.get("perturbation", {}), ensure_ascii=False)]
-    for i, step in enumerate(r["steps"], 1):
-        lines += [f"\n--- Turn {i} ---", step["output"]]
-        for h in step.get("hits", []):
-            lines += [f"\nEvidence [{h['id']}] {h['title']}", h["text"]]
+它会区分全零奖励、全满分、相同部分得分、有奖励差异的组，并导出候选模型输出。无需 GPU，不重新推理。
 
-out = Path("runtime/director_death_v4_base.txt")
-out.write_text("\n".join(
-    textwrap.fill(line, width=100, replace_whitespace=False)
-    for block in lines for line in block.split("\n")
-) + "\n")
-print("完整轨迹已保存：", out)
-PY
-```
+运行后，把下面目录中的 summary.txt 和 candidate_traces.txt 发给我：
 
-打开 `runtime/director_death_v4_base.txt`，发文件或截图即可。已加入自动换行，避免右侧证据被截掉。
+runtime/runs/v4_base/main_20261009T100336Z_3e49ab/offline_audit/

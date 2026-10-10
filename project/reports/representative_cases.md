@@ -159,3 +159,15 @@ V0错把父亲作答案、V1转向无关人物、V2同名头衔混淆、V3拒答
 - 第二轮同时返回Glenn Miller传记（March 1, 1904）和正确原歌曲段落（明确Eddie Rabbitt）。模型没有据此修正演唱者，最终仍宣称原歌曲演唱者Glenn Miller并判sufficient；引用其他歌曲ID与Glenn Miller传记ID。日期有原文出处，但属于错误人物；第一跳关系不被引用支持，不能叫纯粹无证据日期生成。
 - 分层诊断：初始关键证据被移除→关系误绑定→纠错证据已到达却未更新known→错误人物属性作答。第二轮尚未检索到正确人物生日，不能说全部必要证据齐全，也不能说完全没有可纠错证据。应先修正第一跳再补Eddie Rabbitt生日；只鼓励更多搜索不足以阻止沿错误实体延伸。
 - 保留原目标提醒与简短judge作为当前主干，但known字段是可修正假设而非可信缓存；下一步train-only候选监督应包含关系来源核对、新证据纠错及修正后补查。先核实另一日期退化案例，不从单例推断全部hard失败同因。
+
+### 导演去世日期：两次关系错接（2026-10-10）
+
+用户提供自然/hard完整逐轮截图。自然轨迹：Some Came Running→Vincente Minnelli→July 25, 1986，两搜正确，引用电影及人物段落。
+
+hard为withhold_one，首次只删除正确电影结果，留下Charlotte Sometimes（导演Eric Byler）、Still Waters Run Deep（导演Fred Paul）。第二轮模型将Some Came Running的导演写成Eric Byler，查询其去世日期：这是跨作品移用关系，没有证据支持。结果返回Éric Rohmer（去世11 January 2010）、Eric Morel、Eric J. Adams，未见Eric Byler或正确导演Vincente Minnelli。最终把Rohmer日期归给Byler，判sufficient并输出11 January 2010；又发生跨人物属性错接。日期字符串有来源，但不是目标人物属性。
+
+区别于生日hard：本例后续没有正确第一跳纠错证据到达，不能称为忽略已返回的正确导演事实；但已有标题/正文足以识别“作品不符”和“人物不符”。因此既存在必要证据未找回，也存在未识别结果不支持查询关系、沿无据known继续搜索的策略失败；不能简单归因检索器，也不能证明检索器不可恢复。只用了2/4搜索，未耗尽搜索次数（其他token预算不能仅凭次数确定）。
+
+合理下一动作应回到最早未获支持的关系：检索原电影的导演，取得证据后再查其去世日期；不能机械继续查错误人物日期。共同训练方向为关系主体/谓词/客体与来源对齐、无据关系不写为known、矛盾/不匹配后撤销或降级旧判断。生日例另需新证据纠错。开发题仅诊断，后续监督从train构造。
+
+附带引用问题：最终sources为1,3，所展示真实passage IDs均为长ID，属于无效来源ID；现行continuation将invalid_source_ids作为诊断，仍status=answered，不暗改历史评分。引用格式与语义支持分开：ID有效也不保证关系支持，ID无效也不是本例两次关系错接的根因。

@@ -294,3 +294,12 @@ Run：`dev_20261009T064354Z_7f3ed6`，路径`v4_eval_aligned`，COMPLETE；同�
 - 案例摘要：祖父题V4-base EM1、2次搜索，答案Archibald Campbell, Master of Campbell；证明本次题目严格答对，完整证据链/停止理由及旧V4 aligned同题状态尚待对照。乐队自然/hard均2搜答对，国籍自然2搜答对。新hard退化：Some Came Running导演去世日期，自然2搜July 25, 1986正确，hard2搜11 January 2010错误；未见hits，不确定错误导演还是属性无据。生日题未在本次自动摘要出现，不能推断已修复。
 
 - 生日题V4-base轨迹确认：自然两搜EM1，正确识别Eddie Rabbitt后补生日（此前V4自然也对，属保持）。hard两搜EM0：把其他歌曲的Glenn Miller绑定为原歌曲演唱者；第二搜已返回原歌曲→Eddie Rabbitt的纠错证据，却维持旧known，引用其他歌曲和Glenn Miller传记答March 1, 1904。属关系误绑定＋未按新证据修正，再缺正确人物生日；不是纯检索缺失，也不是所有必要证据均已齐全。保留简短原目标判断，但下一步需让known可被证据推翻，按关系逐跳分开统计检索到达与证据利用；未修改模型或启动新训练。
+
+- 导演日期hard完整截图确认：withhold_one移除原电影段落；模型把Charlotte Sometimes导演Eric Byler当作Some Came Running导演，随后检索Byler却使用Éric Rohmer传记中的11 January 2010并归给Byler。两次关系错接，2搜后sufficient；没有返回正确导演证据，因此区别于生日例“纠错证据已到达仍不更新”。瓶颈包含不识别检索结果与原关系/实体不符、未回查最早缺证据的一跳；不据此认定检索器无恢复能力。sources=1,3无效但现行仅诊断，保持原评分。下一训练方向收敛为证据约束的关系确认/撤销/补查，暂未改训练。
+
+### V4-base 关系核验与修正：开源调研（2026-10-10）
+
+- 核查Self-RAG反思监督及支持分数选候选、RARR的agreement gate→editor→更新claim、CRAG训练评估器与知识准备、RE-TRAC允许质疑旧摘要的配置，以及本地ReSeek字符串近似奖励。分别支持“判断证据支持性、修正旧说法、由判断驱动回查”；没有一个已核查实现可直接视为本项目多跳回退的完整方案。
+- 下一步建议为审核后的train-only状态→短判断＋动作监督，保留现有目标提醒与完整证据即停止的正例；暂未修改训练代码。来源、代码入口、弱标签边界和验收思路见[调研文档](reports/v4_base_evidence_revision_research.md)。外部实现只静态阅读，未运行；不给出未经实验的成功概率。
+
+- 用户反馈后修订：暂缓优先SFT结论，聚焦近期agentic search自主决策训练。补查CaRR/C-GRPO（证据链奖励，已核查奖励源码）、MR-Search（跨尝试RL，入口与部分源码）、EviBack（全错组证据约束Teacher奖励，论文/发布说明）、ERL（gold过程分数触发擦除，不能当自主回退）。下一步先审核训练rollout恢复成功覆盖及奖励组类型，判断需要证据链奖励还是探索/全错组辅助；不从少数badcase直接规定固定动作。详见同一调研文档末节，未改训练代码。
