@@ -67,13 +67,14 @@ def prepare_validation(out, data_dir, smoke):
 
 
 def main(version="v4"):
-    base = version == "v4_base"
-    if version not in ("v4", "v4_base"):
+    evidence = version == "v4_base_evidence"
+    base = version in ("v4_base", "v4_base_evidence")
+    if version not in ("v4", "v4_base", "v4_base_evidence"):
         raise ValueError("Unknown training stage")
-    parser = argparse.ArgumentParser(description="V4-base: initialize V4 step100 and train original-goal tracking with GRPO." if base else __doc__)
+    parser = argparse.ArgumentParser(description="V4-base evidence reward: initialize base step125; train-only annotated citation proxy." if evidence else ("V4-base: initialize V4 step100 and train original-goal tracking with GRPO." if base else __doc__))
     parser.add_argument('--mode', choices=('smoke', 'main'), default='smoke')
     parser.add_argument('--gpus', type=int, choices=(2, 4, 8), default=8)
-    parser.add_argument('--init-run', default='main_20261007T095646Z_3f4cdb' if base else 'main_20261006T164842Z_548d39')
+    parser.add_argument('--init-run', default='main_20261009T100336Z_3e49ab' if evidence else 'main_20261007T095646Z_3f4cdb' if base else 'main_20261006T164842Z_548d39')
     parser.add_argument('--retriever-run', default='main_20261007T042356Z_357492')
     args = parser.parse_args()
     if any(not re.fullmatch(r'[A-Za-z0-9_-]+', v) for v in (args.init_run, args.retriever_run)):
@@ -96,24 +97,25 @@ def main(version="v4"):
         source, corpus = resource_path('AGENTIC_PROCESSED_DATA_DIR'), resource_path('AGENTIC_CORPUS_DIR')
         retriever_run = runs / 'v3_retriever' / args.retriever_run
         retrieval = validate_retriever(retriever_run, source, corpus)
-        parent = runs / ('v4' if base else 'v2') / args.init_run
+        parent_version = 'v4_base' if evidence else ('v4' if base else 'v2')
+        parent = runs / parent_version / args.init_run
         parent_report, parent_manifest = read(parent / 'report.json'), read(parent / 'manifest.json')
-        if parent_report['status'] != 'PASSED' or parent_manifest['mode'] != 'main' or parent_manifest['version'] != ('v4' if base else 'v2'):
+        if parent_report['status'] != 'PASSED' or parent_manifest['mode'] != 'main' or parent_manifest['version'] != parent_version:
             raise ValueError('Initialization must be a passed main run of the preceding stage')
         if parent_manifest['data']['source_manifest_sha256'] != sha256(source / 'manifest.json'):
             raise ValueError('V2 training dataset changed')
-        parent_step = 100 if base else int(parent_manifest['steps'])
+        parent_step = 125 if evidence else (100 if base else int(parent_manifest['steps']))
         if base:
             from project.training.v4_monitor import select_checkpoint
             selected = select_checkpoint(load_jsonl(parent / 'validation_metrics.jsonl'))
-            if selected != read(parent / 'selection.json') or selected['selected_step'] != 100:
-                raise ValueError('V4-base requires the verified V4 selected step100')
+            if selected != read(parent / 'selection.json') or selected['selected_step'] != parent_step:
+                raise ValueError('Parent selected checkpoint differs from required initialization')
             if parent_manifest['retrieval'] != retrieval:
                 raise ValueError('Do not change the V4 step100 retriever')
             if parent_manifest['tokenizer'] != model_inventory(resource_path('AGENTIC_MODEL_DIR')):
                 raise ValueError('Parent tokenizer changed')
         policy = export_model(parent, parent_step)
-        data_dir, prepared = prepare(version=version, output_dir=out / 'data')
+        data_dir, prepared = prepare(version="v4_base" if evidence else version, output_dir=out / 'data')
         if prepared['task'] != parent_manifest['data']['task']:
             raise ValueError('Task budgets/config changed since V2')
         hard = prepare_plan(source, corpus, out / 'hard_plan.json')
@@ -128,6 +130,9 @@ def main(version="v4"):
         prepared['files'] = {name: sha256(data_dir / name) for name in ('train.parquet', 'dev.parquet')}
         prepared.update(version=version, hard_episodes=hard, validation_sizes={k: len(v) for k, v in expected.items()})
         save_json(data_dir / 'manifest.json', prepared)
+        if evidence:
+            from project.training.evidence_reward import prepare_supports
+            prepare_supports(source, corpus, out / 'train_supports.json')
         config = build_config(out, data_dir, prepared, args.gpus, steps, smoke, 'v2', policy, overrides={
             'trainer.custom_trainer': {'path': 'pkg://project.training.v4_trainer', 'name': 'V4Trainer'},
             'trainer.tensorboard_dir': str(resource_path('AGENTIC_ROOT') / 'tensorboard' / (version + '_' + run_id)),
@@ -136,7 +141,9 @@ def main(version="v4"):
             'trainer.max_actor_ckpt_to_keep': 2 if smoke else 5,
             'reward_model.reward_kwargs': {'version': 'v2', 'monitoring': True, 'audit_dir': str(out / 'reward_audit'),
                                           'max_searches': prepared['task']['max_searches'],
-                                          'max_new_tokens': prepared['task']['max_new_tokens']},
+                                          'max_new_tokens': prepared['task']['max_new_tokens'],
+                                          **({'support_path': str(out / 'train_supports.json'), 'evidence_weight': 0.2,
+                                              'save_observations': True} if evidence else {})},
             'agentic': {'task': prepared['task'], 'retriever_name': 'retriever_' + run_id,
                         'corpus': str(corpus), 'corpus_sha256': prepared['corpus_sha256'],
                         'index': str(retriever_run / 'index'), 'retriever': str(retriever_run / 'model'),
@@ -160,7 +167,9 @@ def main(version="v4"):
                   'retrieval': retrieval, 'protocol': 'v2', 'state_ledger': False,
                   'dev_hard_plan_sha256': sha256(out / 'dev_hard_plan.json'),
                   'validation_tasks_sha256': sha256(out / 'validation_tasks.json'),
-                  'reward': 'strict canonical terminal F1; KL loss .001; reference=initial policy',
+                  'reward': ('0.8 canonical F1 + 0.2 EM-gated observed annotated citation F1; train only' if evidence else
+                             'strict canonical terminal F1; KL loss .001; reference=initial policy'),
+                  'train_supports_sha256': sha256(out / 'train_supports.json') if evidence else None,
                   'system_prompt': system_prompt(base)})
         print(f'=== {version.upper()} PREPARE | PASSED ===\n'
               f'Policy: {parent.name} step={parent_step} | retriever: frozen V3 | goal anchor={base}\n'

@@ -18,8 +18,8 @@ from project.training.v4 import read, validate_retriever
 
 
 def main(version="v4"):
-    base = version == "v4_base"
-    if version not in ("v4", "v4_base"):
+    base = version in ("v4_base", "v4_base_evidence")
+    if version not in ("v4", "v4_base", "v4_base_evidence"):
         raise ValueError("Unknown evaluation stage")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--train-run', required=True)
@@ -79,7 +79,7 @@ def main(version="v4"):
     if not step and model_inventory(policy) != manifest['policy']:
         raise ValueError('Initial policy changed')
     run_id = 'dev_' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ_') + uuid.uuid4().hex[:6]
-    out = runs / ('v4_base_eval' if base else ('v4_eval_aligned' if aligned else 'v4_eval')) / run_id
+    out = runs / (version + '_eval' if base else ('v4_eval_aligned' if aligned else 'v4_eval')) / run_id
     out.mkdir(parents=True)
     summary = {'status': 'running', 'train_run': args.train_run, 'selected_step': step,
                'history_mode': args.history_mode, 'groups': {}}

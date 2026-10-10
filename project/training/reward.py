@@ -19,7 +19,10 @@ def reward_audit_json(records, groups):
 @register("agentic_f1")
 class SearchRewardManager:
     def __init__(self, tokenizer, num_examine=0, compute_score=None, reward_fn_key=None,
-                 audit_dir=None, max_searches=4, max_new_tokens=512, version="v1", monitoring=False):
+                 audit_dir=None, max_searches=4, max_new_tokens=512, version="v1", monitoring=False, support_path=None, evidence_weight=0.2, save_observations=False):
+        self.support_data = json.loads(Path(support_path).read_text()) if support_path else None
+        self.evidence_weight = evidence_weight
+        self.save_observations = save_observations
         self.version = version
         self.monitoring = monitoring
         self.tokenizer = tokenizer
@@ -42,7 +45,16 @@ class SearchRewardManager:
             score = trajectory_score(texts, gold, self.max_searches, version=self.version)
             if any(len(part) >= self.max_new_tokens for part in segments):
                 score.update(score=0.0, em=0.0, status="generation_truncated")
-            rewards[i, length - 1] = score["score"]
+            observations = [self.tokenizer.decode(part, skip_special_tokens=True)
+                            for part in model_segments(ids, [1 - v for v in mask])] if self.save_observations or self.support_data else []
+            training_reward = score['score']
+            if self.support_data and not data.meta_info.get('validate', False):
+                from project.training.evidence_reward import citation_proxy
+                details = citation_proxy(texts, observations, score,
+                    str(data.non_tensor_batch['extra_info'][i]['task_id']), self.support_data, self.evidence_weight)
+                score.update(details)
+                training_reward = details['training_reward']
+            rewards[i, length - 1] = training_reward
             if self.monitoring:
                 from project.training.v4_monitor import token_cost
                 info = data.non_tensor_batch['extra_info'][i]
@@ -52,9 +64,9 @@ class SearchRewardManager:
             for key, value in score.items():
                 extras[key].append(value)
             task_id = data.non_tensor_batch["extra_info"][i]["task_id"]
-            groups[str(task_id)].append(score["score"])
+            groups[str(task_id)].append(training_reward)
             records.append({**score, "task_id": str(task_id), "model_tokens": sum(mask),
-                            "tool_template_tokens": length - sum(mask), "model_outputs": texts})
+                            "tool_template_tokens": length - sum(mask), "model_outputs": texts, **({"observations": observations} if self.save_observations else {})})
         if self.audit_dir:
             audit_dir = self.audit_dir / "validation" if data.meta_info.get("validate", False) else self.audit_dir
             audit_dir.mkdir(parents=True, exist_ok=True)

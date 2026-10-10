@@ -44,7 +44,7 @@ def summarize(out, steps, exit_code, version="v1"):
     passed = exit_code == 0 and updates_ok and saved and varied > 0 and masked > 0
     status = "PASSED" if passed else ("FAILED" if exit_code else "NEEDS_REVIEW")
     correction = None
-    if version in ("v2", "v4", "v4_base"):
+    if version in ("v2", "v4", "v4_base", "v4_base_evidence"):
         retrieval_path = out / "retrieval_audit.jsonl"
         retrieval = load_jsonl(retrieval_path) if retrieval_path.exists() else []
         correction = {"planned_calls": len(retrieval),
@@ -57,6 +57,15 @@ def summarize(out, steps, exit_code, version="v1"):
               "metric_source": metric_source, "correction": correction,
               "varying_groups": varied, "groups": groups, "statuses": statuses,
               "masked_tool_template_tokens": masked, "checkpoint_found": saved}
+    if version == 'v4_base_evidence':
+        evidence = {'observations_saved': sum('observations' in r for r in records),
+                    'reward_records': sum('training_reward' in r for r in records),
+                    'correct_with_support_bonus': sum(r.get('em') == 1 and r.get('citation_support_f1', 0) > 0 for r in records),
+                    'invalid_citations': sum(r.get('invalid_citation_count', 0) for r in records)}
+        report['evidence_proxy'] = evidence
+        passed = passed and bool(records) and evidence['observations_saved'] == len(records) and evidence['reward_records'] == len(records)
+        status = 'PASSED' if passed else ('FAILED' if exit_code else 'NEEDS_REVIEW')
+        report['status'] = status
     save_json(out / "report.json", report)
     lines = [f"=== {version.upper()} | {status} ===", f"Run: {out.name}",
              f"Updates logged: {len(metrics)}/{steps} | finite nonzero grad + sampled parameter delta: {updates_ok}",
@@ -64,9 +73,11 @@ def summarize(out, steps, exit_code, version="v1"):
              f"Reward groups with variation: {varied}/{groups} | episodes={len(records)}",
              f"Masked tool/template tokens: {masked} | terminal reward on model tokens only",
              f"Statuses: {statuses}", f"Final checkpoint: {saved} | exit={exit_code}"]
+    if 'evidence_proxy' in report:
+        lines.append(f"Evidence proxy (not entailment): {report['evidence_proxy']}")
     if correction is not None:
         lines.append(f"Correction: {correction}")
-    if version in ('v4', 'v4_base') and (out / 'selection.json').exists():
+    if version in ('v4', 'v4_base', 'v4_base_evidence') and (out / 'selection.json').exists():
         selection = json.loads((out / 'selection.json').read_text())
         report['selection'] = selection
         save_json(out / 'report.json', report)
@@ -88,7 +99,7 @@ def summarize(out, steps, exit_code, version="v1"):
         row = metrics[step]
         lines.append(f"Step {step}: grad={row.get('actor/grad_norm', 0):.4g} delta={row.get('actor/probe_parameter_delta_max', 0):.4g}")
     lines.append("Scope: training integration; no claim of dev improvement.")
-    if version in ('v4', 'v4_base'):
+    if version in ('v4', 'v4_base', 'v4_base_evidence'):
         lines.append(f"{version.upper()}: smoke metrics are integration only; main selection requires independent dev evaluation.")
     if exit_code:
         errors = [line.strip() for line in log.splitlines() if re.search(r'(Error:|Exception:|OutOfMemory|AssertionError)', line)]
