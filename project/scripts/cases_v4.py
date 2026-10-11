@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import textwrap
 from project.common import load_jsonl, resource_path
 from project.scripts.review_v4 import keyed
 
@@ -24,19 +25,26 @@ def compact(value, limit=130):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--eval-run', required=True)
-    parser.add_argument('--stage', choices=('rerender', 'aligned', 'base'), default='rerender')
-    parser.add_argument('--case-id', help='Print one full case instead of the short overview')
+    parser.add_argument('--stage', choices=('rerender', 'aligned', 'base', 'evidence'), default='rerender')
+    parser.add_argument('--quiet', action='store_true', help='Save full text without printing it')
+    selector = parser.add_mutually_exclusive_group()
+    selector.add_argument('--question-contains', help='Select exactly one case by question substring')
+    selector.add_argument('--case-id', help='Print one full case instead of the short overview')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.eval_run):
         parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
-    out = runs / {'rerender': 'v4_eval', 'aligned': 'v4_eval_aligned', 'base': 'v4_base_eval'}[args.stage] / args.eval_run
+    out = runs / {'rerender': 'v4_eval', 'aligned': 'v4_eval_aligned', 'base': 'v4_base_eval', 'evidence': 'v4_base_evidence_eval'}[args.stage] / args.eval_run
     if json.loads((out / 'report.json').read_text())['status'] != 'complete':
         raise ValueError('Use a completed development run')
     versions = {}
     for version, path in HISTORY.items():
         file = runs / path / 'trajectories.jsonl'
         versions[version] = keyed(load_jsonl(file), 'id') if file.exists() else {}
+    if args.stage == 'evidence':
+        baseline = runs / 'v4_base_eval/dev_20261010T063219Z_9caa63'
+        for group in ('natural', 'hard'):
+            versions['V4-base' + ('-hard' if group == 'hard' else '')] = keyed(load_jsonl(baseline / (group + '.jsonl')), 'id')
     versions['V4'] = keyed(load_jsonl(out / 'natural.jsonl'), 'id')
     versions['V4-hard'] = keyed(load_jsonl(out / 'hard.jsonl'), 'id')
     natural, hard = versions['V4'], versions['V4-hard']
@@ -58,6 +66,11 @@ def main():
         candidates = sorted(set(candidates) - {k for _, k in chosen})
         if candidates:
             chosen.append((name, candidates[0]))
+    if args.question_contains:
+        matches = [key for key, row in natural.items() if args.question_contains.casefold() in row['question'].casefold()]
+        if len(matches) != 1:
+            parser.error(f'Question filter matched {len(matches)} cases; expected exactly one')
+        args.case_id = matches[0]
     if args.case_id:
         if args.case_id not in natural:
             parser.error('Case ID is absent from this development run')
@@ -93,11 +106,14 @@ def main():
     if args.case_id and not re.fullmatch(r'[A-Za-z0-9_-]+', args.case_id):
         parser.error('Invalid case ID')
     target.write_text('\n'.join(document) + '\n', encoding='utf-8')
-    if args.case_id:
+    txt_target = target.with_suffix('.txt')
+    txt_target.write_text('\n'.join(textwrap.fill(line, width=100, replace_whitespace=False) if line else ''
+                                    for block in document for line in block.split('\n')) + '\n', encoding='utf-8')
+    if args.case_id and not args.quiet:
         print('\n'.join(document))
     else:
         print('\n'.join(short))
-    print('Full evidence:', target)
+    print('Full evidence TXT:', txt_target)
 
 
 if __name__ == '__main__':

@@ -33,19 +33,20 @@ def main():
     parser.add_argument('--eval-run', required=True)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--aligned', action='store_true', help='Read v4_eval_aligned')
+    mode.add_argument('--evidence', action='store_true', help='Compare evidence stage with V4-base')
     mode.add_argument('--base', action='store_true', help='Read v4_base_eval')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.eval_run):
         parser.error('Invalid run ID')
     runs = resource_path('AGENTIC_RUNS_DIR')
-    out = runs / ('v4_base_eval' if args.base else ('v4_eval_aligned' if args.aligned else 'v4_eval')) / args.eval_run
+    out = runs / ('v4_base_evidence_eval' if args.evidence else 'v4_base_eval' if args.base else ('v4_eval_aligned' if args.aligned else 'v4_eval')) / args.eval_run
     report = json.loads((out / 'report.json').read_text())
     if report['status'] != 'complete':
         raise ValueError('Use a completed V4 development evaluation')
     train_id = report['train_run']
     if not re.fullmatch(r'[A-Za-z0-9_-]+', train_id):
         raise ValueError('Invalid training run ID')
-    train = runs / ('v4_base' if args.base else 'v4') / train_id
+    train = runs / ('v4_base_evidence' if args.evidence else 'v4_base' if args.base else 'v4') / train_id
     step = int(report['selected_step'])
     natural = keyed(load_jsonl(out / 'natural.jsonl'), 'id')
     hard = keyed(load_jsonl(out / 'hard.jsonl'), 'id')
@@ -57,8 +58,9 @@ def main():
              f'Run: {args.eval_run} | selected step={step}',
              f'Natural -> hard, same {len(hard)} IDs: {changes}',
              f'Hard regressions by status: {regressions}']
-    if args.base:
-        baseline = runs / 'v4_eval_aligned' / 'dev_20261009T064354Z_7f3ed6'
+    if args.base or args.evidence:
+        baseline = runs / ('v4_base_eval/dev_20261010T063219Z_9caa63' if args.evidence else 'v4_eval_aligned/dev_20261009T064354Z_7f3ed6')
+        detail = []
         if json.loads((baseline / 'report.json').read_text())['status'] != 'complete':
             raise ValueError('Baseline evaluation is not complete')
         for group, current in (('natural', natural), ('hard', hard)):
@@ -67,7 +69,23 @@ def main():
                     old[k][field] != current[k][field] for k in old for field in ('question', 'gold')):
                 raise ValueError('Baseline task/question/gold differs')
             changes, regressions = paired(old, current)
-            lines.append(f'V4 aligned -> V4-base {group}: {changes}; regressions={regressions}')
+            label = 'V4-base -> evidence' if args.evidence else 'V4 aligned -> V4-base'
+            lines.append(f'{label} {group}: {changes}; regressions={regressions}')
+            for key in sorted(current):
+                a, b = old[key], current[key]
+                transition = ('right' if a['em'] == 1 else 'wrong') + '->' + ('right' if b['em'] == 1 else 'wrong')
+                if a['em'] != b['em'] or b['status'] != 'answered':
+                    detail.extend([f'{group} {transition} | {key}', 'Q: ' + b['question'],
+                                   f"Before: {a['answer']} | {a['status']}",
+                                   f"After: {b['answer']} | {b['status']}", ''])
+            if group == 'hard':
+                applied = {(bool(old[k].get('perturbation', {}).get('applied')),
+                            bool(current[k].get('perturbation', {}).get('applied'))) for k in current}
+                counts = {str(pair): sum((bool(old[k].get('perturbation', {}).get('applied')),
+                                          bool(current[k].get('perturbation', {}).get('applied'))) == pair for k in current)
+                          for pair in sorted(applied)}
+                lines.append(f'Hard applied flags (before, after): {counts}; same flag does not mean same returned evidence')
+        (out / 'paired_changes.txt').write_text('\n'.join(detail) + '\n', encoding='utf-8')
     selected_rows = load_jsonl(train / 'validation' / f'{step}.jsonl')
     for group, independent in (('natural', natural), ('hard', hard)):
         inside = keyed([r for r in selected_rows if r['eval_group'] == group], 'task_id')
